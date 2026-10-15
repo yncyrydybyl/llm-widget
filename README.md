@@ -30,6 +30,26 @@ In Element, add it to a room:
 Open the widget, approve the permissions, pick a model and press **Load model**.
 Nothing is downloaded until then; the browser caches the model for next time.
 
+### Over HTTPS
+
+WebGPU needs a secure context. Plain `http://localhost` qualifies; a LAN IP or hostname
+does not, and an https Element may refuse to frame an http widget. For those cases:
+
+```sh
+pnpm dev:https                 # self-signed cert, listens on all interfaces
+```
+
+Open `https://localhost:5173/` (or the network URL) **once directly in the browser and
+accept the certificate**. Otherwise the iframe in Element stays blank, because there is
+no visible certificate prompt inside a frame. Then add the widget with the https URL:
+
+```
+/addwidget https://localhost:5173/#/?matrix_user_id=$matrix_user_id&theme=$org.matrix.msc2873.client_theme
+```
+
+Other people in the room need a URL their browser can reach. For real use, deploy the
+`dist/` build to any static https host (or Marcade).
+
 `#/?engine=echo` swaps the model for a GPU-free echo engine (used by the e2e tests).
 
 ## How it behaves

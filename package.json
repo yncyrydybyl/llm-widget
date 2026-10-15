@@ -4,6 +4,7 @@
   "description": "A Matrix widget that runs an LLM in the browser and answers !ai requests in the room",
   "scripts": {
     "dev": "vite",
+    "dev:https": "HTTPS=1 vite",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
@@ -21,6 +22,8 @@
     "@playwright/test": "^1.63.0",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tsconfig/svelte": "^5.0.8",
+    "@types/node": "^26.6.5",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
     "@webgpu/types": "^0.1.74",
     "svelte": "^5.57.2",
     "svelte-check": "^4.7.6",

@@ -1,4 +1,5 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import basicSsl from "@vitejs/plugin-basic-ssl";
 import { defineConfig } from "vitest/config";
 import type { Plugin } from "vite";
 
@@ -31,10 +32,15 @@ const cspMeta = (): Plugin => ({
     ],
 });
 
+// `pnpm dev:https`: a self-signed certificate, for an https Element framing the dev
+// server and for reaching it from another machine (WebGPU needs a secure context,
+// and only localhost counts as one over plain http).
+const https = process.env.HTTPS === "1";
+
 export default defineConfig({
     // Served from https://marcade.store/apps/<id>/<version>/ — relative URLs only.
     base: "./",
-    plugins: [svelte(), cspMeta()],
+    plugins: [svelte(), cspMeta(), ...(https ? [basicSsl()] : [])],
     worker: { format: "es" },
     build: {
         target: "es2022",
@@ -47,6 +53,7 @@ export default defineConfig({
     server: {
         // Element and the Player frame the widget; without this Vite refuses to be embedded.
         headers: { "X-Frame-Options": "ALLOWALL" },
+        host: https ? true : undefined,
     },
     test: {
         include: ["src/**/*.test.ts"],
