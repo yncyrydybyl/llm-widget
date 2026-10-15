@@ -14,7 +14,15 @@ const browser = await chromium.launch({
 const ctx = await browser.newContext({ baseURL: "http://localhost:4183" });
 const page = await ctx.newPage();
 page.on("console", (m) => m.type() === "error" && console.log("console:", m.text()));
-page.on("worker", (wk) => wk.on("console", (m) => m.type() === "error" && console.log("worker:", m.text().slice(0, 600))));
+page.on("worker", (wk) => wk.on("console", (m) => m.type() === "error" && console.log("worker:", m.text().slice(0, 120))));
+// Trace job notes (round progress, resets) as they change.
+setInterval(async () => {
+    try {
+        const n = await page.frameLocator("iframe").locator(".job .small").allTextContents();
+        const t = n.join(" | ");
+        if (t && t !== globalThis.__lastNote) console.log(`${new Date().toISOString().slice(11, 19)} note:`, (globalThis.__lastNote = t));
+    } catch {}
+}, 500).unref();
 const ME = "@alice:example.org";
 await page.addInitScript(([me, f16]) => {
     window.__TEST_FIXTURE__ = {

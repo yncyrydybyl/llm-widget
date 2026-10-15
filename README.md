@@ -93,11 +93,13 @@ what your client already shows you.
   far too slow to be useful.
 - Element Desktop's Electron may or may not expose WebGPU; Element Web in a browser is the
   safe choice.
-- Some GPU drivers reset the device when the model processes a long prompt
-  (`VK_ERROR_DEVICE_LOST`; seen on a Radeon 860M with Mesa in Chrome, from about 1,000
-  prompt tokens). The widget then reloads the model, retries with half the prompt size
-  and remembers the size per model on that machine ("How it answers" shows it and can
-  reset it). `#/?f16=0` forces the f32 builds if the f16 path misbehaves.
+- Some GPU drivers reset the device when the model processes a long prompt in one
+  pass (`VK_ERROR_DEVICE_LOST`; seen on a Radeon 860M with Mesa in Chrome, from a few
+  hundred to ~1,000 prompt tokens depending on model size). The widget then reloads the
+  model and feeds long prompts in rounds: each part is acknowledged with "OK" while
+  WebLLM keeps its KV cache, so no single pass exceeds the part size. The part size
+  halves per reset and is remembered per model on that machine ("How it answers" shows
+  it and can reset it). `#/?f16=0` forces the f32 builds.
 - Small models are small: good at summarising and pulling facts out of a short chat, weak
   at reasoning. Pick the largest model your GPU can hold.
 

@@ -40,8 +40,8 @@ export interface Settings {
     answerEveryone: boolean;
     postToRoom: boolean;
     contextSize: number;
-    /** Per model (WebLLM id): the prompt size in characters this GPU has handled. */
-    budgets: Record<string, number>;
+    /** Per model (WebLLM id): the largest prompt part this GPU processes in one pass. */
+    chunks: Record<string, number>;
 }
 
 const SETTINGS_KEY = "llm-widget.settings";
@@ -55,12 +55,13 @@ const PROMPT_BUDGET = 9000;
 /*
  * Some GPU drivers reset the device when one prefill pass gets too heavy
  * (VK_ERROR_DEVICE_LOST on a Radeon 860M with Mesa: ~1000 tokens for a 360M model,
- * fewer for 1.5B). We cannot split prefill finer — the chunk size is compiled into
- * the model library — so on a reset we reload the model, halve the budget for this
- * model on this machine, remember it, and retry.
+ * a few hundred for 4B). WebLLM's own prefill chunk size is compiled into the model
+ * library, so we split long prompts ourselves into rounds (see prefillRounds). On a
+ * reset we reload the model, halve the part size for this model on this machine,
+ * remember it, and retry.
  */
-const MIN_BUDGET = 1500;
-const MAX_GPU_RETRIES = 3;
+const MIN_CHUNK = 300;
+const MAX_GPU_RETRIES = 4;
 const isGpuLoss = (msg: string): boolean => /device (was )?lost|GPUBuffer|mapAsync|DEVICE_LOST/i.test(msg);
 const LOCAL_USER = "@you:local";
 
@@ -71,7 +72,7 @@ function loadSettings(): Settings {
         answerEveryone: false,
         postToRoom: true,
         contextSize: 30,
-        budgets: {},
+        chunks: {},
     };
     try {
         const raw = localStorage.getItem(SETTINGS_KEY);
@@ -115,6 +116,8 @@ export class Controller {
     private nextJob = 1;
     private busy = false;
     private abort: AbortController | null = null;
+    /** Size of the prompt last sent, to size the parts after a GPU reset. */
+    private lastPromptChars = 0;
 
     get model(): string {
         return this.engine?.modelId ?? "";
@@ -260,18 +263,22 @@ export class Controller {
 
     /** Generates within the window, shrinking the prompt when the model says it is too long. */
     private async generate(id: number, engine: Engine, request: Job): Promise<string> {
-        for (let budget = this.budget(engine.modelId); ; budget = Math.floor(budget / 2)) {
+        for (let budget = PROMPT_BUDGET; ; budget = Math.floor(budget / 2)) {
             const prompt = buildPrompt(this.transcript.lines(), request, {
                 prefix: this.settings.prefix,
                 maxLines: this.settings.contextSize,
                 budgetChars: budget,
             });
             const j = this.job(id);
-            if (j) {
-                const shortened = prompt.truncated ? "Request shortened to fit the model; " : "";
-                const reset = j.gpuRetries ? `retry ${j.gpuRetries} after a GPU reset; ` : "";
-                j.note = shortened || reset ? `${shortened}${reset}${prompt.context} messages of context.` : undefined;
-            }
+            const shortened = prompt.truncated ? "Request shortened to fit the model; " : "";
+            const reset = j?.gpuRetries ? `retry ${j.gpuRetries} after a GPU reset; ` : "";
+            const describe = (rounds: string): void => {
+                const j = this.job(id);
+                if (j && (shortened || reset || rounds))
+                    j.note = `${shortened}${reset}${rounds}${prompt.context} messages of context.`;
+            };
+            describe("");
+            this.lastPromptChars = prompt.messages.reduce((n, m) => n + m.content.length, 0);
             try {
                 return await engine.chat(
                     prompt.messages,
@@ -279,7 +286,11 @@ export class Controller {
                         const j = this.job(id);
                         if (j) j.output = stripThinking(soFar) || "…thinking";
                     },
-                    this.abort?.signal,
+                    {
+                        signal: this.abort?.signal,
+                        chunkChars: this.settings.chunks[engine.modelId],
+                        onRound: (i, of) => describe(`reading part ${i} of ${of}; `),
+                    },
                 );
             } catch (e) {
                 if (!String(e).includes("ContextWindowSizeExceeded") || budget < 1000) throw e;
@@ -287,15 +298,17 @@ export class Controller {
         }
     }
 
-    budget(modelId: string): number {
-        return this.settings.budgets[modelId] ?? PROMPT_BUDGET;
+    /** The largest single prefill this GPU handled for the model, if it ever failed. */
+    chunk(modelId: string): number | undefined {
+        return this.settings.chunks[modelId];
     }
 
     /** The device is gone with everything on it: shrink, reload, requeue. */
     private recoverFromGpuLoss(lost: Engine, j: Job | undefined): void {
         const modelId = lost.modelId;
-        const smaller = Math.max(MIN_BUDGET, Math.floor(this.budget(modelId) / 2));
-        this.settings.budgets[modelId] = smaller;
+        const current = Math.min(this.chunk(modelId) ?? Infinity, this.lastPromptChars || PROMPT_BUDGET);
+        const smaller = Math.max(MIN_CHUNK, Math.floor(current / 2));
+        this.settings.chunks[modelId] = smaller;
         this.saveSettings();
         if (j) {
             j.gpuRetries = (j.gpuRetries ?? 0) + 1;
@@ -305,7 +318,7 @@ export class Controller {
                 j.error = "The GPU reset repeatedly on this request. Try a smaller model or a shorter request.";
             } else {
                 j.status = "waiting";
-                j.note = `GPU reset; reloading the model and retrying with a prompt of at most ${smaller} characters.`;
+                j.note = `GPU reset; reloading the model and retrying in parts of at most ${smaller} characters.`;
             }
         }
         // Drop the engine now so pump() idles; the reload pumps the queue when ready.

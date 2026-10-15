@@ -3,7 +3,7 @@
  * local GPU in a worker; `EchoEngine` (fragment `engine=echo`) needs no GPU and
  * exists for the mock-host tests and for trying the room plumbing quickly.
  */
-import type { ChatMessage } from "./room";
+import { prefillRounds, type ChatMessage } from "./room";
 
 export interface ModelInfo {
     /** WebLLM model id without the quantisation suffix. */
@@ -46,9 +46,17 @@ export interface Progress {
     text: string;
 }
 
+export interface ChatOptions {
+    signal?: AbortSignal;
+    /** Largest prompt part processed in one pass; longer prompts go in rounds. */
+    chunkChars?: number;
+    /** Called before each round of a multi-round prompt. */
+    onRound?: (round: number, of: number) => void;
+}
+
 export interface Engine {
     readonly modelId: string;
-    chat(messages: ChatMessage[], onText: (soFar: string) => void, signal?: AbortSignal): Promise<string>;
+    chat(messages: ChatMessage[], onText: (soFar: string) => void, opts?: ChatOptions): Promise<string>;
     unload(): Promise<void>;
 }
 
@@ -96,25 +104,47 @@ class WebLlmEngine implements Engine {
         private worker: Worker,
     ) {}
 
-    async chat(messages: ChatMessage[], onText: (soFar: string) => void, signal?: AbortSignal): Promise<string> {
-        const stream = await this.engine.chat.completions.create({
-            messages,
-            stream: true,
-            temperature: 0.6,
-            max_tokens: 768,
-        });
-        let text = "";
+    async chat(messages: ChatMessage[], onText: (soFar: string) => void, opts: ChatOptions = {}): Promise<string> {
+        // Qwen3 would otherwise think at length before every answer, acknowledgements included.
+        const extra_body = /^Qwen3-/.test(this.modelId) ? { enable_thinking: false } : undefined;
+        const { head, rounds } = prefillRounds(messages, opts.chunkChars ?? Infinity);
+        const history: ChatMessage[] = [...head];
         const abort = (): void => this.engine.interruptGenerate();
-        signal?.addEventListener("abort", abort);
+        opts.signal?.addEventListener("abort", abort);
         try {
+            // Every round but the last only fills the KV cache. The acknowledgement
+            // must end on its own (finish_reason "stop"): a reply cut by max_tokens
+            // makes WebLLM discard the cache and prefill everything again.
+            for (let i = 0; i < rounds.length - 1; i++) {
+                opts.onRound?.(i + 1, rounds.length);
+                history.push({ role: "user", content: rounds[i] });
+                const r = await this.engine.chat.completions.create({
+                    messages: history,
+                    temperature: 0,
+                    max_tokens: 16,
+                    extra_body,
+                });
+                if (opts.signal?.aborted) return "";
+                history.push({ role: "assistant", content: r.choices[0]?.message.content ?? "" });
+            }
+            if (rounds.length > 1) opts.onRound?.(rounds.length, rounds.length);
+            history.push({ role: "user", content: rounds[rounds.length - 1] ?? "" });
+            const stream = await this.engine.chat.completions.create({
+                messages: history,
+                stream: true,
+                temperature: 0.6,
+                max_tokens: 768,
+                extra_body,
+            });
+            let text = "";
             for await (const chunk of stream) {
                 text += chunk.choices[0]?.delta?.content ?? "";
                 onText(text);
             }
+            return text;
         } finally {
-            signal?.removeEventListener("abort", abort);
+            opts.signal?.removeEventListener("abort", abort);
         }
-        return text;
     }
 
     async unload(): Promise<void> {

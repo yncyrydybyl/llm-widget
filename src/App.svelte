@@ -109,10 +109,10 @@
         {#if !c.userId && embedded}
             <p class="small muted">Your user id was not passed to the widget, so it answers everyone. Add <code>matrix_user_id=$matrix_user_id</code> to the widget URL to change that.</p>
         {/if}
-        {#if c.model && c.budget(c.model) < 9000}
+        {#if c.model && c.chunk(c.model)}
             <p class="small muted">
-                After GPU resets, prompts for this model are limited to {c.budget(c.model)} characters on this machine.
-                <button type="button" class="link" onclick={() => { delete c.settings.budgets[c.model]; changed(); }}>reset</button>
+                This GPU reset on long prompts, so this model reads them in parts of at most {c.chunk(c.model)} characters.
+                <button type="button" class="link" onclick={() => { delete c.settings.chunks[c.model]; changed(); }}>reset</button>
             </p>
         {/if}
         <label>

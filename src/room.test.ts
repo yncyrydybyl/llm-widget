@@ -6,6 +6,8 @@ import {
     answerContent,
     buildMessages,
     buildPrompt,
+    prefillRounds,
+    splitText,
     truncate,
     contextLines,
     parseTrigger,
@@ -95,6 +97,14 @@ describe("prompt", () => {
         expect(p.messages[1].content).toContain("[…truncated]");
     });
 
+    it("keeps the start of an oversize newest message instead of dropping it", () => {
+        const long = [line("$1", "old", 1), line("$2", "x ".repeat(5000), 2)];
+        const c = contextLines(long, null, 30, 1000);
+        expect(c).toHaveLength(1);
+        expect(c[0].body).toContain("[…truncated]");
+        expect(c[0].body.length).toBeLessThanOrEqual(1000);
+    });
+
     it("leaves short requests alone", () => {
         const p = buildPrompt(all, { sender: "@bob:x", question: "when?", triggerEventId: "$3" }, { prefix: "!ai", maxLines: 30, budgetChars: 9000 });
         expect(p.truncated).toBe(false);
@@ -122,5 +132,38 @@ describe("answers", () => {
         const c = answerContent("hi", "$1", "Qwen");
         expect(c.msgtype).toBe("m.notice");
         expect(c[MARKER]).toEqual({ model: "Qwen" });
+    });
+});
+
+describe("prefill rounds", () => {
+    it("splits a long request too and points at it in the last round", () => {
+        const text = "Recent conversation: hi\n\nRequest from bob: " + "article ".repeat(800);
+        const r = prefillRounds([{ role: "system", content: "s" }, { role: "user", content: text }], 1000);
+        for (const round of r.rounds) expect(round.length).toBeLessThanOrEqual(1100);
+        expect(r.rounds.slice(0, -1).join("")).toContain("Request from bob");
+        expect(r.rounds.at(-1)).toContain("Carry it out now");
+    });
+
+    it("splits at word boundaries within the limit", () => {
+        const parts = splitText("aaa bbb ccc ddd", 8);
+        expect(parts).toEqual(["aaa bbb", "ccc ddd"]);
+        expect(splitText("short", 100)).toEqual(["short"]);
+    });
+
+    it("leaves a short prompt as one round", () => {
+        const r = prefillRounds([{ role: "system", content: "s" }, { role: "user", content: "hi" }], 1000);
+        expect(r.head).toHaveLength(1);
+        expect(r.rounds).toEqual(["hi"]);
+    });
+
+    it("feeds a long prompt in parts, the request last", () => {
+        const text = "word ".repeat(1000) + "\n\nRequest from bob: summarise";
+        const r = prefillRounds([{ role: "system", content: "s" }, { role: "user", content: text }], 1000);
+        expect(r.rounds.length).toBeGreaterThan(4);
+        for (const round of r.rounds) expect(round.length).toBeLessThanOrEqual(1100);
+        expect(r.rounds[0]).toContain('reply only with "OK"');
+        expect(r.rounds.at(-1)).toMatch(/^That was all \d+ parts/);
+        expect(r.rounds.at(-1)).toContain("Request from bob: summarise");
+        expect(r.rounds.slice(0, -1).join("")).not.toContain("Request from bob");
     });
 });
