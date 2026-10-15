@@ -63,7 +63,17 @@ export async function webGpuStatus(): Promise<GpuStatus> {
         return { problem: "This browser has no WebGPU (try a current Chrome, Edge or Firefox).", f16: false };
     try {
         const adapter = await navigator.gpu.requestAdapter();
-        if (!adapter) return { problem: "WebGPU is present but no GPU adapter is available.", f16: false };
+        if (!adapter) {
+            const linux = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+            return {
+                problem:
+                    "WebGPU is present but no GPU adapter is available." +
+                    (linux
+                        ? " On Linux, Chrome needs --enable-unsafe-webgpu --enable-features=Vulkan (check chrome://gpu)."
+                        : " Check that hardware acceleration is on (chrome://gpu)."),
+                f16: false,
+            };
+        }
         return { problem: null, f16: adapter.features.has("shader-f16") };
     } catch (e) {
         return { problem: `WebGPU failed: ${String(e)}`, f16: false };
