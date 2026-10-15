@@ -1,0 +1,33 @@
+{
+  "name": "llm-widget",
+  "version": "0.1.0",
+  "description": "A Matrix widget that runs an LLM in the browser and answers !ai requests in the room",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "test:e2e": "pnpm build && playwright test"
+  },
+  "author": "Yan Minagawa",
+  "license": "AGPL-3.0-or-later",
+  "packageManager": "pnpm@10.29.3",
+  "dependencies": {
+    "@mlc-ai/web-llm": "^0.2.86",
+    "matrix-widget-api": "^1.20.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tsconfig/svelte": "^5.0.8",
+    "@webgpu/types": "^0.1.74",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.6",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  },
+  "private": true,
+  "type": "module"
+}

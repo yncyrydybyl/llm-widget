@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Mock Matrix client</title>
+        <style>
+            html, body { height: 100%; margin: 0; }
+            iframe { width: 100%; height: 100%; border: 0; }
+        </style>
+    </head>
+    <body>
+        <script type="module">
+            /*
+             * A deliberately small stand-in for Element's ClientWidgetApi: enough of
+             * the postMessage protocol to negotiate capabilities, push room state and
+             * answer the common fromWidget actions. It exists so tests exercise the
+             * real widget transport rather than a stub of the widget's own code.
+             *
+             * Drive it from Playwright with page.addInitScript setting
+             * window.__TEST_FIXTURE__ = {
+             *   params:   { theme: "dark", … },       // extra fragment params for the widget
+             *   deny:     true,                        // user refused the consent prompt
+             *   denySend: true,                        // refuse an MSC2974 renegotiation
+             *   state:    [ { type, state_key, content, sender, … } ],  // pushed as update_state
+             *   events:   [ … ],                       // answer to read_events
+             *   bodies:   { "mxc://…": "<base64>" },   // answers to download_file
+             *   widgetPath: "/index.html",
+             * };
+             * Push a live room event with window.__toWidget("send_event", event).
+             * Afterwards inspect window.__REQUESTED_CAPABILITIES__, __RENEGOTIATED__,
+             * __SENT__, __UPLOADS__, __DOWNLOADS__, __READ_EVENTS__, __CONTENT_LOADED__.
+             */
+            const fixture = window.__TEST_FIXTURE__ ?? {};
+            const widgetId = fixture.widgetId ?? "test-widget";
+
+            window.__REQUESTED_CAPABILITIES__ = null;
+            window.__RENEGOTIATED__ = null;
+            window.__SENT__ = [];
+            window.__UPLOADS__ = [];
+            window.__DOWNLOADS__ = [];
+            window.__READ_EVENTS__ = null;
+            window.__CONTENT_LOADED__ = false;
+
+            // Hosts append widgetId + parentUrl to the query; widget config goes in the fragment.
+            const query = new URLSearchParams({ widgetId, parentUrl: window.location.href });
+            const frag = new URLSearchParams(fixture.params ?? {});
+            const iframe = document.createElement("iframe");
+            iframe.src = `${fixture.widgetPath ?? "/index.html"}?${query}#/?${frag}`;
+            document.body.appendChild(iframe);
+
+            const reply = (request, response) => iframe.contentWindow.postMessage({ ...request, response }, "*");
+            let nextId = 0;
+            const toWidget = (action, data) =>
+                iframe.contentWindow.postMessage(
+                    { api: "toWidget", widgetId, requestId: `client-${nextId++}`, action, data },
+                    "*",
+                );
+
+            // Lets a test deliver a live room event, as Element does for new messages.
+            window.__toWidget = toWidget;
+
+            let negotiated = false;
+            let approvedSet = [];
+
+            window.addEventListener("message", async (event) => {
+                const m = event.data;
+                if (!m?.action || !m.requestId || m.widgetId !== widgetId) return;
+
+                // Responses to our own toWidget requests.
+                if (m.api === "toWidget" && m.response) {
+                    if (m.action === "capabilities" && m.response.capabilities) {
+                        window.__REQUESTED_CAPABILITIES__ = m.response.capabilities;
+                        approvedSet = fixture.deny ? [] : m.response.capabilities;
+                        toWidget("notify_capabilities", { approved: approvedSet, requested: m.response.capabilities });
+                        // Like a real host: initial room state for approved receive.state_event filters.
+                        if (approvedSet.some((c) => c.startsWith("org.matrix.msc2762.receive.state_event:"))) {
+                            toWidget("update_state", { state: fixture.state ?? [] });
+                        }
+                    }
+                    return;
+                }
+                if (m.api !== "fromWidget" || m.response) return;
+
+                switch (m.action) {
+                    case "supported_api_versions":
+                        // Advertising MSC2871 tells the widget to wait for notify_capabilities
+                        // before assuming anything is allowed — how a strict host behaves.
+                        reply(m, {
+                            supported_versions: [
+                                "0.0.1", "0.0.2",
+                                "org.matrix.msc2762_update_state", "org.matrix.msc2871",
+                                "org.matrix.msc2876", "org.matrix.msc2974", "org.matrix.msc4039",
+                            ],
+                        });
+                        // A client negotiates exactly once; the widget may ask for versions
+                        // more than once while that is in flight.
+                        if (!negotiated) {
+                            negotiated = true;
+                            toWidget("capabilities", {});
+                        }
+                        break;
+
+                    case "content_loaded":
+                        window.__CONTENT_LOADED__ = true;
+                        reply(m, {});
+                        break;
+
+                    // MSC2974: the widget asks for more later (Element supports this, the Player does not).
+                    case "org.matrix.msc2974.request_capabilities": {
+                        const asked = m.data.capabilities ?? [];
+                        window.__RENEGOTIATED__ = asked;
+                        reply(m, {});
+                        const approved = fixture.denySend ? [] : asked;
+                        approvedSet = [...new Set([...approvedSet, ...approved])];
+                        toWidget("notify_capabilities", { approved, requested: asked });
+                        break;
+                    }
+
+                    case "send_event":
+                        window.__SENT__.push({ type: m.data.type, state_key: m.data.state_key, content: m.data.content });
+                        reply(m, { room_id: "!room:example.org", event_id: `$sent-${window.__SENT__.length}` });
+                        break;
+
+                    case "org.matrix.msc2876.read_events":
+                        window.__READ_EVENTS__ = m.data;
+                        reply(m, { events: fixture.events ?? [] });
+                        break;
+
+                    case "org.matrix.msc4039.upload_file": {
+                        const bytes = new Uint8Array(await m.data.file.arrayBuffer());
+                        window.__UPLOADS__.push(bytes);
+                        reply(m, { content_uri: `mxc://example.org/uploaded-${window.__UPLOADS__.length}` });
+                        break;
+                    }
+
+                    case "org.matrix.msc4039.download_file": {
+                        window.__DOWNLOADS__.push(m.data.content_uri);
+                        // Serve what a homeserver serves: for an encrypted room, ciphertext, key not included.
+                        const body = fixture.bodies?.[m.data.content_uri] ?? "";
+                        const bytes = Uint8Array.from(atob(body), (c) => c.charCodeAt(0));
+                        reply(m, { file: new Blob([bytes]) });
+                        break;
+                    }
+
+                    case "get_openid":
+                        reply(m, { state: "allowed", access_token: "test-token", token_type: "Bearer",
+                                   matrix_server_name: "example.org", expires_in: 3600 });
+                        break;
+
+                    default:
+                        reply(m, { error: { message: `unsupported action ${m.action}` } });
+                }
+            });
+        </script>
+    </body>
+</html>
