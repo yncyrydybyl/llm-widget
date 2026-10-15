@@ -122,7 +122,7 @@ export function contextLines(all: Line[], beforeEventId: string | null, maxLines
     let chars = 0;
     for (let i = end - 1; i >= 0 && out.length < maxLines; i--) {
         const len = all[i].body.length + 40;
-        if (chars + len > maxChars && out.length > 0) break;
+        if (chars + len > maxChars) break;
         chars += len;
         out.push(all[i]);
     }
@@ -157,6 +157,40 @@ export function buildMessages(
                 `Request from ${displayName(request.sender)}: ${question}`,
         },
     ];
+}
+
+/** Cuts text to `max` characters, saying so, so the model knows it saw only part. */
+export function truncate(text: string, max: number): { text: string; truncated: boolean } {
+    if (text.length <= max) return { text, truncated: false };
+    return { text: `${text.slice(0, Math.max(0, max - 16)).trimEnd()}\n[…truncated]`, truncated: true };
+}
+
+export interface Prompt {
+    messages: ChatMessage[];
+    /** Lines of room history included. */
+    context: number;
+    /** The request itself was cut to fit. */
+    truncated: boolean;
+}
+
+/**
+ * The whole prompt within `budgetChars`: the request first (at most 60% of the
+ * budget, so a pasted article still leaves room for the conversation), then as
+ * much recent history as fits in the rest.
+ */
+export function buildPrompt(
+    all: Line[],
+    request: { sender: string; question: string; triggerEventId: string | null },
+    opts: { prefix: string; maxLines: number; budgetChars: number },
+): Prompt {
+    const q = truncate(request.question, Math.floor(opts.budgetChars * 0.6));
+    const left = opts.budgetChars - q.text.length - SYSTEM_PROMPT.length;
+    const context = left > 200 ? contextLines(all, request.triggerEventId, opts.maxLines, left) : [];
+    return {
+        messages: buildMessages(context, { sender: request.sender, question: q.text }, opts.prefix),
+        context: context.length,
+        truncated: q.truncated,
+    };
 }
 
 /** Reasoning models (Qwen3) wrap their scratchpad in <think>; it does not belong in the room. */

@@ -8,8 +8,7 @@ import { DEFAULT_MODEL, EchoEngine, MODELS, availableModels, isCached, loadWebLl
 import {
     Transcript,
     answerContent,
-    buildMessages,
-    contextLines,
+    buildPrompt,
     parseTrigger,
     stripThinking,
     toLine,
@@ -29,6 +28,10 @@ export interface Job {
     status: JobStatus;
     output: string;
     error?: string;
+    /** Shown under the request: what had to be cut to fit the model. */
+    note?: string;
+    /** GPU resets survived so far; the job gives up after MAX_GPU_RETRIES. */
+    gpuRetries?: number;
 }
 
 export interface Settings {
@@ -37,10 +40,28 @@ export interface Settings {
     answerEveryone: boolean;
     postToRoom: boolean;
     contextSize: number;
+    /** Per model (WebLLM id): the prompt size in characters this GPU has handled. */
+    budgets: Record<string, number>;
 }
 
 const SETTINGS_KEY = "llm-widget.settings";
-const MAX_CONTEXT_CHARS = 8000; // leaves room for the answer in a 4k-token window
+/*
+ * Prompt budget in characters. The models have a 4096-token window and we reserve
+ * 768 tokens for the answer; at a conservative ~3 characters per token (German,
+ * markup and URLs tokenise worse than English prose) 9000 characters fit. If the
+ * model still reports an overflow, the request is retried with half the budget.
+ */
+const PROMPT_BUDGET = 9000;
+/*
+ * Some GPU drivers reset the device when one prefill pass gets too heavy
+ * (VK_ERROR_DEVICE_LOST on a Radeon 860M with Mesa: ~1000 tokens for a 360M model,
+ * fewer for 1.5B). We cannot split prefill finer — the chunk size is compiled into
+ * the model library — so on a reset we reload the model, halve the budget for this
+ * model on this machine, remember it, and retry.
+ */
+const MIN_BUDGET = 1500;
+const MAX_GPU_RETRIES = 3;
+const isGpuLoss = (msg: string): boolean => /device (was )?lost|GPUBuffer|mapAsync|DEVICE_LOST/i.test(msg);
 const LOCAL_USER = "@you:local";
 
 function loadSettings(): Settings {
@@ -50,6 +71,7 @@ function loadSettings(): Settings {
         answerEveryone: false,
         postToRoom: true,
         contextSize: 30,
+        budgets: {},
     };
     try {
         const raw = localStorage.getItem(SETTINGS_KEY);
@@ -122,7 +144,8 @@ export class Controller {
     async start(): Promise<void> {
         void webGpuStatus().then((g) => {
             this.gpuProblem = this.useEcho ? null : g.problem;
-            this.f16 = g.f16;
+            // `f16=0` in the fragment forces the f32 builds (for GPUs whose f16 path misbehaves).
+            this.f16 = g.f16 && this.params.get("f16") !== "0";
             if (!this.models.some((m) => m.id === this.settings.modelId)) this.settings.modelId = this.models[0].id;
             void this.refreshCache();
         });
@@ -210,38 +233,87 @@ export class Controller {
         const id = next.id;
         const engine = this.engine;
         try {
-            const context = contextLines(
-                this.transcript.lines(),
-                next.triggerEventId,
-                this.settings.contextSize,
-                MAX_CONTEXT_CHARS,
-            );
-            const messages = buildMessages(context, next, this.settings.prefix);
             this.job(id)!.status = "generating";
             this.abort = new AbortController();
-            const raw = await engine.chat(
-                messages,
-                (soFar) => {
-                    const j = this.job(id);
-                    if (j) j.output = stripThinking(soFar) || "…thinking";
-                },
-                this.abort.signal,
-            );
+            const raw = await this.generate(id, engine, next);
             const answer = stripThinking(raw);
             const j = this.job(id)!;
             j.output = answer;
             await this.deliver(j, answer, engine.modelId);
         } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
             const j = this.job(id);
+            if (isGpuLoss(msg) && !this.abort?.signal.aborted) {
+                this.recoverFromGpuLoss(engine, j);
+                return;
+            }
             if (j) {
                 j.status = "error";
-                j.error = e instanceof Error ? e.message : String(e);
+                j.error = msg;
             }
         } finally {
             this.abort = null;
             this.busy = false;
             void this.pump();
         }
+    }
+
+    /** Generates within the window, shrinking the prompt when the model says it is too long. */
+    private async generate(id: number, engine: Engine, request: Job): Promise<string> {
+        for (let budget = this.budget(engine.modelId); ; budget = Math.floor(budget / 2)) {
+            const prompt = buildPrompt(this.transcript.lines(), request, {
+                prefix: this.settings.prefix,
+                maxLines: this.settings.contextSize,
+                budgetChars: budget,
+            });
+            const j = this.job(id);
+            if (j) {
+                const shortened = prompt.truncated ? "Request shortened to fit the model; " : "";
+                const reset = j.gpuRetries ? `retry ${j.gpuRetries} after a GPU reset; ` : "";
+                j.note = shortened || reset ? `${shortened}${reset}${prompt.context} messages of context.` : undefined;
+            }
+            try {
+                return await engine.chat(
+                    prompt.messages,
+                    (soFar) => {
+                        const j = this.job(id);
+                        if (j) j.output = stripThinking(soFar) || "…thinking";
+                    },
+                    this.abort?.signal,
+                );
+            } catch (e) {
+                if (!String(e).includes("ContextWindowSizeExceeded") || budget < 1000) throw e;
+            }
+        }
+    }
+
+    budget(modelId: string): number {
+        return this.settings.budgets[modelId] ?? PROMPT_BUDGET;
+    }
+
+    /** The device is gone with everything on it: shrink, reload, requeue. */
+    private recoverFromGpuLoss(lost: Engine, j: Job | undefined): void {
+        const modelId = lost.modelId;
+        const smaller = Math.max(MIN_BUDGET, Math.floor(this.budget(modelId) / 2));
+        this.settings.budgets[modelId] = smaller;
+        this.saveSettings();
+        if (j) {
+            j.gpuRetries = (j.gpuRetries ?? 0) + 1;
+            j.output = "";
+            if (j.gpuRetries > MAX_GPU_RETRIES) {
+                j.status = "error";
+                j.error = "The GPU reset repeatedly on this request. Try a smaller model or a shorter request.";
+            } else {
+                j.status = "waiting";
+                j.note = `GPU reset; reloading the model and retrying with a prompt of at most ${smaller} characters.`;
+            }
+        }
+        // Drop the engine now so pump() idles; the reload pumps the queue when ready.
+        // Unloading a lost device can hang, so the worker is not waited for.
+        this.engine = null;
+        this.engineStatus = "idle";
+        void lost.unload();
+        void this.loadModel();
     }
 
     private async deliver(j: Job, answer: string, model: string): Promise<void> {

@@ -14,16 +14,17 @@ const browser = await chromium.launch({
 const ctx = await browser.newContext({ baseURL: "http://localhost:4183" });
 const page = await ctx.newPage();
 page.on("console", (m) => m.type() === "error" && console.log("console:", m.text()));
+page.on("worker", (wk) => wk.on("console", (m) => m.type() === "error" && console.log("worker:", m.text().slice(0, 600))));
 const ME = "@alice:example.org";
-await page.addInitScript(([me]) => {
+await page.addInitScript(([me, f16]) => {
     window.__TEST_FIXTURE__ = {
-        params: { matrix_user_id: me },
+        params: { matrix_user_id: me, ...(f16 ? { f16 } : {}) },
         events: [
             { type: "m.room.message", event_id: "$1", sender: "@bob:example.org", origin_server_ts: 1, content: { msgtype: "m.text", body: "Lunch is at 12:30 in the Italian place on Main Street." }, unsigned: {} },
             { type: "m.room.message", event_id: "$2", sender: me, origin_server_ts: 2, content: { msgtype: "m.text", body: "Great, I'll bring Carol." }, unsigned: {} },
         ],
     };
-}, [ME]);
+}, [ME, process.env.F16]);
 await page.goto("/__test__/index.html");
 const w = page.frameLocator("iframe");
 await w.getByText("in room").waitFor();
@@ -46,13 +47,15 @@ try {
 }
 console.log(`loaded in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
 if (!process.exitCode) {
-    await page.evaluate(() => window.__toWidget("send_event", { type: "m.room.message", event_id: "$3", room_id: "!room:example.org", sender: "@alice:example.org", origin_server_ts: 3, content: { msgtype: "m.text", body: "!ai where and when is lunch?" }, unsigned: {} }));
+    const q = "!ai " + (process.env.LONG ? "Lorem ipsum dolor sit amet, Hannover 96 Mediadaten Karriere. ".repeat(Number(process.env.LONG)) + " Summarise this." : "where and when is lunch?");
+    await page.evaluate((q) => window.__toWidget("send_event", { type: "m.room.message", event_id: "$3", room_id: "!room:example.org", sender: "@alice:example.org", origin_server_ts: 3, content: { msgtype: "m.text", body: q }, unsigned: {} }), q);
     const t1 = Date.now();
     try {
-        await w.getByText(/posted to room|error/).waitFor({ timeout: Number(process.env.ANSWER_TIMEOUT ?? 300_000) });
+        await w.getByText(/posted to room|error|skipped/).waitFor({ timeout: Number(process.env.ANSWER_TIMEOUT ?? 300_000) });
     } catch {
         console.log("no answer yet; UI:", await w.locator(".jobs").innerText());
     }
+    console.log("job:", (await w.locator(".job").first().innerText()).slice(-400));
     console.log(`answered in ${((Date.now() - t1) / 1000).toFixed(1)} s`);
     console.log("sent:", JSON.stringify(await page.evaluate(() => window.__SENT__), null, 1));
     await page.screenshot({ path: "test/real/screenshot.png" });

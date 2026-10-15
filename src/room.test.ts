@@ -5,6 +5,8 @@ import {
     Transcript,
     answerContent,
     buildMessages,
+    buildPrompt,
+    truncate,
     contextLines,
     parseTrigger,
     stripReplyFallback,
@@ -78,9 +80,25 @@ describe("prompt", () => {
         expect(contextLines(all, null, 10, 10_000)).toHaveLength(3);
     });
 
-    it("bounds by characters but always keeps one line", () => {
-        expect(contextLines(all, "$3", 10, 50)).toHaveLength(1);
-        expect(contextLines(all, "$3", 10, 1)).toHaveLength(1);
+    it("bounds by characters", () => {
+        expect(contextLines(all, "$3", 10, 60)).toHaveLength(1);
+        expect(contextLines(all, "$3", 10, 1)).toHaveLength(0);
+    });
+
+    it("fits a pasted article and still keeps recent history", () => {
+        const article = "word ".repeat(5000);
+        const p = buildPrompt(all, { sender: "@bob:x", question: article, triggerEventId: "$3" }, { prefix: "!ai", maxLines: 30, budgetChars: 9000 });
+        const size = p.messages.reduce((n, m) => n + m.content.length, 0);
+        expect(p.truncated).toBe(true);
+        expect(size).toBeLessThan(9500);
+        expect(p.context).toBe(2);
+        expect(p.messages[1].content).toContain("[…truncated]");
+    });
+
+    it("leaves short requests alone", () => {
+        const p = buildPrompt(all, { sender: "@bob:x", question: "when?", triggerEventId: "$3" }, { prefix: "!ai", maxLines: 30, budgetChars: 9000 });
+        expect(p.truncated).toBe(false);
+        expect(truncate("abc", 10)).toEqual({ text: "abc", truncated: false });
     });
 
     it("builds a system + user message with the transcript", () => {

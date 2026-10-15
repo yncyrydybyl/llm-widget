@@ -109,6 +109,12 @@
         {#if !c.userId && embedded}
             <p class="small muted">Your user id was not passed to the widget, so it answers everyone. Add <code>matrix_user_id=$matrix_user_id</code> to the widget URL to change that.</p>
         {/if}
+        {#if c.model && c.budget(c.model) < 9000}
+            <p class="small muted">
+                After GPU resets, prompts for this model are limited to {c.budget(c.model)} characters on this machine.
+                <button type="button" class="link" onclick={() => { delete c.settings.budgets[c.model]; changed(); }}>reset</button>
+            </p>
+        {/if}
         <label>
             <span>Context: last</span>
             <input type="number" min="0" max="50" bind:value={c.settings.contextSize} onchange={changed} />
@@ -143,7 +149,8 @@
                         <button type="button" class="link" onclick={() => c.stop()}>stop</button>
                     {/if}
                 </div>
-                <p class="question">{j.question || "(summarise)"}</p>
+                <p class="question" title={j.question.length > 300 ? j.question.slice(0, 2000) : undefined}>{j.question || "(summarise)"}</p>
+                {#if j.note}<p class="small muted">{j.note}</p>{/if}
                 {#if j.output}<p class="answer">{j.output}</p>{/if}
                 {#if j.error}<p class="small warn">{j.error}</p>{/if}
             </article>

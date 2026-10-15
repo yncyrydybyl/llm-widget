@@ -118,7 +118,8 @@ class WebLlmEngine implements Engine {
     }
 
     async unload(): Promise<void> {
-        await this.engine.unload().catch(() => undefined);
+        // After a lost device the engine may never answer; do not wait for it forever.
+        await Promise.race([this.engine.unload().catch(() => undefined), new Promise((r) => setTimeout(r, 2000))]);
         this.worker.terminate();
     }
 }
