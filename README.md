@@ -79,6 +79,7 @@ that message the one it works on.
 | `!ai reply [how]` | draft a reply to a message |
 | `!ai transcribe` | write out a voice message (Whisper, no LLM needed) |
 | `!ai read` | the text of an image (OCR), PDF or text file (no LLM needed) |
+| `!ai describe` | what an image shows, and its text (a vision model, in English; no LLM needed) |
 | `!ai help` | post this list (no model needed) |
 
 - **Which message they work on.** Commands that work on a message (`tldr`, `tr`, `fix`,
@@ -98,13 +99,20 @@ Reply to an attachment and the widget reads it **in the browser**:
 | Attachment | How it is read | Runs on |
 |---|---|---|
 | Voice message, audio | Whisper via Transformers.js: base (0.1 GB), small (0.3 GB) or large-v3-turbo (1 GB) | CPU (base, small) or GPU (turbo) |
-| Image | Tesseract.js with German and English data | CPU |
+| Image, its text | Tesseract.js with German and English data | CPU |
+| Image, what it shows | Florence-2 base via Transformers.js (0.3 GB), a short caption in English | GPU |
 | PDF | pdf.js text layer (scanned PDFs without text come out empty) | CPU |
 | Text file | as is | – |
 
-- **Commands on attachments.** `transcribe` and `read` post the text as it is. Any other
-  request sent as a reply works on that text, for example `!ai sum` on a PDF or
-  `!ai tr en` on a voice message.
+- **Commands on attachments.** `transcribe`, `read` and `describe` post the text as it
+  is. Any other request sent as a reply works on that text, for example `!ai sum` on a
+  PDF or `!ai tr en` on a voice message.
+- **Images.** A question about an image ("what is in it?") gets the caption and, when
+  Tesseract is confident (60 or more of 100), the text in it: a photo's "text" is
+  noise. `read` always posts the text. The chat model cannot see the picture itself,
+  so it knows only what the caption says. Florence-2 was right on a photo, an animal
+  and a screenshot where SmolVLM 256M and 500M invented details; 1.5 s per image once
+  loaded, on a Radeon 860M.
 - **Language.** Whisper gets the room's language (German or English, guessed from recent
   messages). The small models otherwise misdetect short messages and translate them
   into nonsense.
@@ -194,7 +202,7 @@ member's total is the sum over their devices. Two limits follow from that:
 | `org.matrix.msc2762.receive.event:m.room.message#m.notice` | Keep earlier answers in context and see when another widget already answered |
 | `org.matrix.msc2762.send.event:m.room.message#m.notice` | Post answers |
 | `org.matrix.msc2762.receive.event:m.room.message#m.audio` | See voice messages and audio, to transcribe them when asked |
-| `org.matrix.msc2762.receive.event:m.room.message#m.image` | See images, for OCR when asked |
+| `org.matrix.msc2762.receive.event:m.room.message#m.image` | See images, to read or describe them when asked |
 | `org.matrix.msc2762.receive.event:m.room.message#m.file` | See files (PDF, text), to read them when asked |
 | `org.matrix.msc4039.download_file` | Download an attachment when someone asks about it |
 | `org.matrix.msc2762.send.event:de.datanauten.llm_widget.presence` | Announce that this widget is open, its model, and what it has donated |
@@ -243,7 +251,7 @@ Face sees which model someone loads.
 pnpm test                      # vitest: trigger parsing, transcript, prompt building
 pnpm test:e2e                  # Playwright against a mock Matrix host, echo engine
 HEADED=1 node test/real/webllm.mjs [model]   # real model on your GPU (after pnpm build)
-HEADED=1 node test/real/media.mjs <dir> [model]  # OCR, PDF, Whisper, search, read aloud
+HEADED=1 node test/real/media.mjs <dir> [model]  # OCR, PDF, Whisper, image captions, search, read aloud
                                # <dir> holds scan.png, plan.pdf, voice.ogg
 ```
 

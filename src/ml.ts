@@ -113,6 +113,12 @@ export async function transcribe(blob: Blob, rec: Recogniser, progress?: Progres
     return ml.call<string>({ op: "transcribe", audio, model: rec.model, device: rec.device, language }, progress, [audio.buffer]);
 }
 
+/** What is in an image, in English, from a small vision model on the GPU (Florence-2, 0.3 GB once). */
+export function describeImage(blob: Blob, progress?: Progress): Promise<string> {
+    progress?.("Looking at the image…");
+    return ml.call<string>({ op: "describe", image: blob }, progress);
+}
+
 export interface Voice {
     id: string;
     label: string;
@@ -149,7 +155,8 @@ export async function pdfText(blob: Blob, progress?: Progress): Promise<string> 
     return pages.filter(Boolean).join("\n\n");
 }
 
-export async function ocr(blob: Blob, progress?: Progress): Promise<string> {
+/** Text in an image, and Tesseract's mean confidence in it (0–100). */
+export async function ocr(blob: Blob, progress?: Progress): Promise<{ text: string; confidence: number }> {
     const { createWorker } = await import("tesseract.js");
     const worker = await createWorker(["deu", "eng"], 1, {
         workerPath: `${VENDOR}tesseract/worker.min.js`,
@@ -161,7 +168,7 @@ export async function ocr(blob: Blob, progress?: Progress): Promise<string> {
     });
     try {
         const { data } = await worker.recognize(blob);
-        return data.text.trim();
+        return { text: data.text.trim(), confidence: data.confidence };
     } finally {
         await worker.terminate();
     }

@@ -19,7 +19,7 @@ import {
     type Summary,
 } from "./presence";
 import { download, readable } from "./media";
-import { RECOGNISERS, VOICES, embed, guessLanguage, ocr, pdfText, speak, transcribe } from "./ml";
+import { RECOGNISERS, VOICES, describeImage, embed, guessLanguage, ocr, pdfText, speak, transcribe } from "./ml";
 import { chunk, dot, excerpts, topK } from "./search";
 import {
     Transcript,
@@ -98,6 +98,8 @@ const LOCAL_USER = "@you:local";
 const SUBJECT_MAX = 5000;
 /** Digest at most this many parts of a long document, one model call each. */
 const MAX_DIGEST_PARTS = 8;
+/** Below this Tesseract confidence, an image's OCR text stays out of descriptions and questions. */
+const OCR_MIN_CONFIDENCE = 60;
 /** Extracted text posted as is (transcribe, read) is cut here. */
 const MAX_EXTRACT_POST = 8000;
 /** Older messages added to the context when searching the history. */
@@ -202,6 +204,8 @@ export class Controller {
     private transcript = new Transcript();
     /** Text of attachments, by event id: transcripts, OCR, PDF text. */
     private extracted = new Map<string, Promise<string>>();
+    /** Tesseract's confidence per image event: low on photos, where its "text" is noise. */
+    private ocrConfidence = new Map<string, number>();
     /** Embeddings of room messages, by event id. */
     private vectors = new Map<string, number[]>();
     /** Events read as history at startup: context only, never answered. */
@@ -397,7 +401,7 @@ export class Controller {
         const j = this.job(id)!;
         j.status = "generating";
         try {
-            const text = (await this.textOf(id, j.plan.target!)) || "(no text found)";
+            const text = (await this.textOf(id, j.plan.target!, j.plan.command === "describe" ? "both" : "read")) || "(no text found)";
             const cut = text.length > MAX_EXTRACT_POST;
             j.output = cut ? `${text.slice(0, MAX_EXTRACT_POST)}\n[…${text.length - MAX_EXTRACT_POST} more characters]` : text;
             j.note = undefined;
@@ -408,15 +412,29 @@ export class Controller {
         }
     }
 
-    /** The text of an attachment, extracted once per event. */
-    private textOf(id: number, target: NonNullable<Plan["target"]>): Promise<string> {
+    /**
+     * The text of an attachment, extracted once per event. For an image, `read`
+     * is its text (OCR) and `both` (describe, and questions about it) what it
+     * shows plus that text, so the model knows the picture and its words.
+     */
+    private async textOf(id: number, target: NonNullable<Plan["target"]>, mode: "read" | "both" = "both"): Promise<string> {
+        if (target.media?.kind !== "image" || mode === "read") return this.extract(id, target, "read");
+        const [seen, all] = await Promise.all([this.extract(id, target, "describe"), this.extract(id, target, "read").catch(() => "")]);
+        // A photo's "text" is noise ("vr X 79 / Fl \S & 2 x."): scans and screenshots
+        // scored 74–96 on a test set, photos 33–42.
+        const words = (this.ocrConfidence.get(target.eventId) ?? 0) >= OCR_MIN_CONFIDENCE ? all : "";
+        return words ? `Image description: ${seen}\n\nText in the image:\n${words}` : `Image description: ${seen}`;
+    }
+
+    private extract(id: number, target: NonNullable<Plan["target"]>, mode: "read" | "describe"): Promise<string> {
         const note = (text: string): void => {
             const j = this.job(id);
             if (j) j.note = text;
         };
         const media = target.media;
         if (!media) return Promise.resolve(target.body);
-        let p = this.extracted.get(target.eventId);
+        const key = mode === "describe" ? `${target.eventId}|describe` : target.eventId;
+        let p = this.extracted.get(key);
         if (!p) {
             p = (async () => {
                 if (!this.api) throw new Error("Attachments can only be read inside a room.");
@@ -426,14 +444,20 @@ export class Controller {
                 const blob = await download(this.api, media);
                 if (how === "text") return (await blob.text()).trim();
                 if (how === "pdf") return pdfText(blob, note);
-                if (how === "ocr") return ocr(blob, note);
+                if (how === "ocr" && mode === "describe")
+                    return describeImage(blob, note);
+                if (how === "ocr") {
+                    const { text, confidence } = await ocr(blob, note);
+                    this.ocrConfidence.set(target.eventId, confidence);
+                    return text;
+                }
                 const rec = RECOGNISERS.find((r) => r.id === this.settings.recogniser) ?? RECOGNISERS[0];
                 // The room's language: the small Whisper models misdetect short messages.
                 const recent = this.transcript.lines().filter((l) => !l.media && !l.fromModel).slice(-30).map((l) => l.body).join(" ");
                 return transcribe(blob, rec, note, guessLanguage(recent));
             })();
-            this.extracted.set(target.eventId, p);
-            p.catch(() => this.extracted.delete(target.eventId));
+            this.extracted.set(key, p);
+            p.catch(() => this.extracted.delete(key));
         }
         return p;
     }

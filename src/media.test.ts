@@ -54,6 +54,14 @@ describe("media", () => {
         const reply: Line = { eventId: "$r", sender: "@a:x", body: "!ai sum", ts: 3, fromModel: false, inReplyTo: "$v" };
         expect(plan("sum", [voice, text, reply], reply, "!ai")).toMatchObject({ scope: "none", target: { eventId: "$v" } });
     });
+
+    it("plans describe only on images", () => {
+        const image: Line = { eventId: "$i", sender: "@bob:x", body: "[image: photo.jpg]", ts: 1, fromModel: false, media: toMedia({ msgtype: "m.image", body: "photo.jpg", url: "mxc://a/i" })! };
+        const voice: Line = { eventId: "$v", sender: "@bob:x", body: "[voice message]", ts: 2, fromModel: false, media: toMedia({ msgtype: "m.audio", body: "v", url: "mxc://a/v", "org.matrix.msc3245.voice": {} })! };
+        expect(plan("describe", [image], null, "!ai")).toMatchObject({ command: "describe", extract: true, target: { eventId: "$i" } });
+        expect(plan("beschreibe", [image], null, "!ai")).toMatchObject({ command: "describe", extract: true });
+        expect(plan("describe", [image, voice], null, "!ai").fixed).toContain("Reply to an image");
+    });
 });
 
 describe("search", () => {

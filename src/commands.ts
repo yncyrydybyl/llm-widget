@@ -91,6 +91,15 @@ export const COMMANDS: Command[] = [
         instruction: () => "",
     },
     {
+        names: ["describe", "beschreibe", "caption"],
+        usage: "describe",
+        help: "what an image shows, and its text (a small vision model, in English)",
+        needsText: true,
+        extract: true,
+        scope: "none",
+        instruction: () => "",
+    },
+    {
         names: ["sum", "summary", "summarise", "summarize", "zusammenfassung"],
         usage: "sum [n]",
         help: "summarise the conversation (the last n messages)",
@@ -323,6 +332,8 @@ export function plan(question: string, all: Line[], trigger: Line | null, prefix
     }
     if (cmd.extract) {
         const media = p.target?.media;
+        if (name === "describe" && media?.kind !== "image")
+            return { command: name, instruction: "", scope: "none", fixed: `Reply to an image with ${prefix} ${cmd.usage}.` };
         if (!media || !readable(media))
             return { command: name, instruction: "", scope: "none", fixed: `Reply to a voice message, image, PDF or text file with ${prefix} ${cmd.usage}.` };
         p.extract = true;
