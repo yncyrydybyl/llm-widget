@@ -6,6 +6,7 @@
 import type { MlRequest, MlResponse } from "./ml.worker";
 import type { TtsRequest, TtsResponse } from "./tts.worker";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { TESSDATA } from "./cdn";
 
 /** Where scripts/vendor.mjs put the WASM runtimes, as an absolute URL. */
 export const VENDOR = new URL("vendor/", window.location.href).href;
@@ -153,7 +154,7 @@ export async function ocr(blob: Blob, progress?: Progress): Promise<string> {
     const worker = await createWorker(["deu", "eng"], 1, {
         workerPath: `${VENDOR}tesseract/worker.min.js`,
         corePath: `${VENDOR}tesseract/`,
-        langPath: `${VENDOR}tesseract/lang`,
+        langPath: TESSDATA,
         // A blob: worker would be blocked by the CSP (worker-src 'self').
         workerBlobURL: false,
         logger: (m: { status: string; progress: number }) => progress?.(`${m.status} ${Math.round(m.progress * 100)}%`),

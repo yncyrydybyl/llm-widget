@@ -5,6 +5,7 @@
  * use and are kept in the origin-private file system.
  */
 import { TtsSession } from "@mintplex-labs/piper-tts-web";
+import { PIPER_DATA } from "./cdn";
 
 export type TtsRequest = { id: number; op: "init"; vendor: string } | { id: number; op: "speak"; text: string; voiceId: string };
 export type TtsResponse =
@@ -30,7 +31,7 @@ self.onmessage = async (ev: MessageEvent<TtsRequest>) => {
                 postMessage({ id: req.id, progress: { file: p.url, loaded: p.loaded, total: p.total } } satisfies TtsResponse),
             wasmPaths: {
                 onnxWasm: `${vendor}ort/`,
-                piperData: `${vendor}piper/piper_phonemize.data`,
+                piperData: PIPER_DATA,
                 piperWasm: `${vendor}piper/piper_phonemize.wasm`,
             },
         });

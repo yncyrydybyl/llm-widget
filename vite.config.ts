@@ -17,6 +17,8 @@ const MODEL_HOSTS = [
     "https://*.huggingface.co",
     "https://*.hf.co",
     "https://raw.githubusercontent.com",
+    // OCR languages and voice data at pinned versions (src/cdn.ts).
+    "https://cdn.jsdelivr.net",
 ].join(" ");
 
 const CSP =
@@ -32,6 +34,19 @@ const cspMeta = (): Plugin => ({
     ],
 });
 
+/*
+ * ONNX Runtime's JavaScript keeps a fallback `new URL("ort-wasm-….wasm", import.meta.url)`,
+ * so Vite emits its wasm into assets/ although the workers load it from vendor/ort/
+ * (wasmPaths, scripts/vendor.mjs). Drop that copy: 26 MB per file nobody fetches.
+ */
+const dropOrtWasm = (): Plugin => ({
+    name: "drop-ort-wasm",
+    apply: "build",
+    generateBundle(_, bundle) {
+        for (const name of Object.keys(bundle)) if (/(^|\/)ort-wasm[^/]*\.wasm$/.test(name)) delete bundle[name];
+    },
+});
+
 // `pnpm dev:https`: a self-signed certificate, for an https Element framing the dev
 // server and for reaching it from another machine (WebGPU needs a secure context,
 // and only localhost counts as one over plain http).
@@ -40,8 +55,8 @@ const https = process.env.HTTPS === "1";
 export default defineConfig({
     // Served from https://marcade.store/apps/<id>/<version>/ — relative URLs only.
     base: "./",
-    plugins: [svelte(), cspMeta(), ...(https ? [basicSsl()] : [])],
-    worker: { format: "es" },
+    plugins: [svelte(), cspMeta(), dropOrtWasm(), ...(https ? [basicSsl()] : [])],
+    worker: { format: "es", plugins: () => [dropOrtWasm()] },
     build: {
         target: "es2022",
         sourcemap: false,

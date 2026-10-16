@@ -726,10 +726,14 @@ export class Controller {
             this.engine = null;
             this.engine = this.useEcho
                 ? new EchoEngine()
-                : await loadWebLlm(webLlmId(this.selected ?? this.models[0], this.f16), (p) => {
-                      this.progress = p.fraction;
-                      this.progressText = p.text;
-                  });
+                : await loadWebLlm(
+                      webLlmId(this.selected ?? this.models[0], this.f16),
+                      (p) => {
+                          this.progress = p.fraction;
+                          this.progressText = p.text;
+                      },
+                      (this.selected ?? this.models[0]).chatOpts,
+                  );
             this.engineStatus = "ready";
             this.announceSoon();
             void this.refreshCache();

@@ -9,7 +9,9 @@ await new Promise((r) => setTimeout(r, 800));
 const browser = await chromium.launch({
     channel: "chromium",
     headless: process.env.HEADED ? false : true,
-    args: (process.env.GPU_ARGS ?? "--enable-unsafe-webgpu --enable-features=Vulkan --ignore-gpu-blocklist").split(" "),
+    args: (process.env.GPU_ARGS ?? "--enable-unsafe-webgpu --enable-features=Vulkan --ignore-gpu-blocklist --use-angle=vulkan").split(" "),
+    // Headless otherwise may pick SwiftShader, WebGPU on the CPU: answers never finish.
+    ignoreDefaultArgs: ["--use-angle=swiftshader-webgl"],
 });
 const ctx = await browser.newContext({ baseURL: "http://localhost:4183" });
 const page = await ctx.newPage();
@@ -43,7 +45,7 @@ console.log("adapter:", await page.frames()[1].evaluate(async () => {
 }));
 const warn = await w.locator(".note.warn").allTextContents();
 console.log("warnings:", warn);
-await w.locator("select").selectOption(model);
+await w.locator("select").first().selectOption(model);
 const t0 = Date.now();
 await w.getByRole("button", { name: "Load model" }).click();
 try {

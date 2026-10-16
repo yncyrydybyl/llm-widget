@@ -9,7 +9,8 @@ WebGPU, in a Web Worker) and lets it work with the room you are in. Write
 
 in the room. The widget gives the model the recent conversation as context and posts the
 answer as an `m.notice` reply. No backend, no API key, and room content never leaves
-your machine. The only network traffic is the one-time model download from Hugging Face.
+your machine. The only network traffic is the one-time download of the models (Hugging Face)
+and their data (jsDelivr).
 
 ## Try it
 
@@ -223,15 +224,18 @@ what your client already shows you.
 ## Security
 
 The production build carries a CSP that allows network access only to Hugging Face (model
-weights) and `raw.githubusercontent.com` (WebLLM's compiled model libraries), plus
-`'wasm-unsafe-eval'` to instantiate them. Nothing else can be fetched, so room content has
-no way out of the page.
+weights), `raw.githubusercontent.com` (WebLLM's compiled model libraries) and
+`cdn.jsdelivr.net` (OCR languages and voice data), plus `'wasm-unsafe-eval'` to
+instantiate them. Nothing else can be fetched, so room content has no way out of the page.
 
-The WebAssembly runtimes for ONNX Runtime, Piper and Tesseract, and Tesseract's language
-data, are copied from `node_modules` into `public/vendor/` by `scripts/vendor.mjs`
-before every dev run and build. The widget serves them itself, without public CDNs
-(which the CSP would block anyway). This adds about 90 MB to `dist/`; a browser
-downloads a file only when a feature first needs it.
+The WebAssembly runtimes for ONNX Runtime, Piper and Tesseract are copied from
+`node_modules` into `public/vendor/` by `scripts/vendor.mjs` before every dev run and
+build, so the code that runs is the code the build ships (about 50 MB in `dist/vendor/`). Data
+is fetched when a feature first needs it: Tesseract's English and German models
+(4 MB, from `naptha/tessdata` at a fixed commit) and Piper's phoneme data (17 MB, npm
+`@diffusionstudio/piper-wasm@1.0.0`), both through jsDelivr at pinned versions
+(`src/cdn.ts`). jsDelivr then sees that someone uses OCR or voice output, as Hugging
+Face sees which model someone loads.
 
 ## Tests
 

@@ -15,7 +15,9 @@ await new Promise((r) => setTimeout(r, 800));
 const browser = await chromium.launch({
     channel: "chromium",
     headless: !process.env.HEADED,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--ignore-gpu-blocklist", "--autoplay-policy=no-user-gesture-required"],
+    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--ignore-gpu-blocklist", "--autoplay-policy=no-user-gesture-required", "--use-angle=vulkan"],
+    // Headless otherwise may pick SwiftShader, WebGPU on the CPU: answers never finish.
+    ignoreDefaultArgs: ["--use-angle=swiftshader-webgl"],
 });
 const ctx = await browser.newContext({ baseURL: "http://localhost:4183" });
 const page = await ctx.newPage();
