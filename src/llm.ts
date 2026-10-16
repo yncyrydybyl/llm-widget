@@ -17,15 +17,15 @@ export interface ModelInfo {
     chatOpts?: { sliding_window_size?: number; context_window_size?: number; attention_sink_size?: number };
 }
 
-/** A curated subset of WebLLM's prebuilt models that fit an ordinary laptop GPU. */
+/**
+ * A curated subset of WebLLM's prebuilt models that fit an ordinary laptop GPU.
+ * Not Gemma 3 1B (WebLLM 0.2.86): as shipped it refuses to load (context and
+ * sliding window both set); with the sliding window it fills its KV cache on
+ * the first prompt longer than the window, and without it never answers.
+ */
 export const MODELS: ModelInfo[] = [
     { id: "SmolLM2-360M-Instruct", label: "SmolLM2 360M (tiny, for testing)", f16MB: 376, f32MB: 580 },
     { id: "Llama-3.2-1B-Instruct", label: "Llama 3.2 1B", f16MB: 879, f32MB: 1129 },
-    // WebLLM's config sets both a context window (4096) and a sliding window (512),
-    // and then refuses to load it: "Only one of … can be positive". Its library is
-    // built for the sliding window (without it the model loads but never answers),
-    // which also needs an attention sink size.
-    { id: "gemma3-1b-it", label: "Gemma 3 1B", f16MB: 711, chatOpts: { context_window_size: -1, attention_sink_size: 0 } },
     { id: "Qwen2.5-1.5B-Instruct", label: "Qwen 2.5 1.5B", f16MB: 1630, f32MB: 1889 },
     { id: "Llama-3.2-3B-Instruct", label: "Llama 3.2 3B", f16MB: 2264, f32MB: 2952 },
     { id: "Qwen3.5-2B", label: "Qwen 3.5 2B", f16MB: 2245, f32MB: 2592 },
