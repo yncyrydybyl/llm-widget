@@ -1,6 +1,6 @@
 {
   "name": "llm-widget",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Matrix widget that runs an LLM in the browser and answers !ai requests in the room",
   "scripts": {
     "dev": "pnpm vendor && vite",
