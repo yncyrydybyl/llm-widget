@@ -76,6 +76,8 @@ that message the one it works on.
 | `!ai rewrite <polite\|short\|formal\|casual\|simple\|clear> [text]` | rewrite in another style |
 | `!ai explain [term]` | explain a term, or the message replied to |
 | `!ai reply [how]` | draft a reply to a message |
+| `!ai transcribe` | write out a voice message (Whisper, no LLM needed) |
+| `!ai read` | the text of an image (OCR), PDF or text file (no LLM needed) |
 | `!ai help` | post this list (no model needed) |
 
 - **Which message they work on.** Commands that work on a message (`tldr`, `tr`, `fix`,
@@ -87,6 +89,44 @@ that message the one it works on.
 - **A question mark keeps it a question.** A request that ends in `?` stays a free
   question even if it starts with a command word.
 - **Free questions sent as a reply** get the replied-to message as their subject too.
+
+## Voice messages, images and documents
+
+Reply to an attachment and the widget reads it **in the browser**:
+
+| Attachment | How it is read | Runs on |
+|---|---|---|
+| Voice message, audio | Whisper via Transformers.js: base (0.1 GB), small (0.3 GB) or large-v3-turbo (1 GB) | CPU (base, small) or GPU (turbo) |
+| Image | Tesseract.js with German and English data | CPU |
+| PDF | pdf.js text layer (scanned PDFs without text come out empty) | CPU |
+| Text file | as is | – |
+
+- **Commands on attachments.** `transcribe` and `read` post the text as it is. Any other
+  request sent as a reply works on that text, for example `!ai sum` on a PDF or
+  `!ai tr en` on a voice message.
+- **Language.** Whisper gets the room's language (German or English, guessed from recent
+  messages). The small models otherwise misdetect short messages and translate them
+  into nonsense.
+- **Encrypted rooms.** The client hands over the ciphertext, and the widget checks its
+  SHA-256 and decrypts it with the file key from the event, as clients do.
+- **Long texts.** Documents and transcripts longer than about 5,000 characters are
+  summarised part by part (up to 8 parts, one model call each), and the request is
+  answered from those summaries. With search on, a question gets the most relevant parts
+  instead.
+
+## Search
+
+"Search older messages and long documents" (off by default) loads multilingual-e5-small
+(about 120 MB, CPU). With it on, a free question also gets the six older messages most
+related to it, beyond the recent window, and questions about long documents get their
+most relevant parts instead of a digest.
+
+## Read aloud
+
+Every answer has a **read aloud** button. Piper voices (German: Thorsten or Kerstin;
+English: two voices) synthesise speech on the CPU, so they don't compete with the LLM
+for the GPU. "Automatic" picks a German or English voice by the text. Voices download
+on first use, about 60 MB each, and are cached in the browser.
 
 ## How it behaves
 
@@ -152,6 +192,10 @@ member's total is the sum over their devices. Two limits follow from that:
 | `org.matrix.msc2762.receive.event:m.room.message#m.text` | Read the conversation and `!ai` requests |
 | `org.matrix.msc2762.receive.event:m.room.message#m.notice` | Keep earlier answers in context and see when another widget already answered |
 | `org.matrix.msc2762.send.event:m.room.message#m.notice` | Post answers |
+| `org.matrix.msc2762.receive.event:m.room.message#m.audio` | See voice messages and audio, to transcribe them when asked |
+| `org.matrix.msc2762.receive.event:m.room.message#m.image` | See images, for OCR when asked |
+| `org.matrix.msc2762.receive.event:m.room.message#m.file` | See files (PDF, text), to read them when asked |
+| `org.matrix.msc4039.download_file` | Download an attachment when someone asks about it |
 | `org.matrix.msc2762.send.event:de.minagawa.llm_widget.presence` | Announce that this widget is open, its model, and what it has donated |
 | `org.matrix.msc2762.receive.event:de.minagawa.llm_widget.presence` | Count the other open widgets and show everyone's donations |
 
@@ -183,12 +227,20 @@ weights) and `raw.githubusercontent.com` (WebLLM's compiled model libraries), pl
 `'wasm-unsafe-eval'` to instantiate them. Nothing else can be fetched, so room content has
 no way out of the page.
 
+The WebAssembly runtimes for ONNX Runtime, Piper and Tesseract, and Tesseract's language
+data, are copied from `node_modules` into `public/vendor/` by `scripts/vendor.mjs`
+before every dev run and build. The widget serves them itself, without public CDNs
+(which the CSP would block anyway). This adds about 90 MB to `dist/`; a browser
+downloads a file only when a feature first needs it.
+
 ## Tests
 
 ```sh
 pnpm test                      # vitest: trigger parsing, transcript, prompt building
 pnpm test:e2e                  # Playwright against a mock Matrix host, echo engine
 HEADED=1 node test/real/webllm.mjs [model]   # real model on your GPU (after pnpm build)
+HEADED=1 node test/real/media.mjs <dir> [model]  # OCR, PDF, Whisper, search, read aloud
+                               # <dir> holds scan.png, plan.pdf, voice.ogg
 ```
 
 ## License

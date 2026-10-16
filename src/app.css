@@ -108,3 +108,5 @@ th { color: var(--muted); font-weight: 500; }
     .shortcuts dl { grid-template-columns: 1fr; }
     .shortcuts dd { margin-bottom: 4px; }
 }
+
+.actions { display: flex; gap: 10px; align-items: baseline; margin-top: 4px; font-size: 12px; }

@@ -4,6 +4,7 @@
  * no DOM here, so all of it is unit-tested.
  */
 import type { IRoomEvent } from "matrix-widget-api";
+import { describe, toMedia, type Media } from "./media";
 
 /** Marks our own answers so they are recognised as model output, also in other widgets. */
 export const MARKER = "de.minagawa.llm_widget";
@@ -17,6 +18,8 @@ export interface Line {
     fromModel: boolean;
     /** For model answers: the event they reply to. */
     inReplyTo?: string;
+    /** Voice messages, images and files; `body` then describes the attachment. */
+    media?: Media;
 }
 
 interface MessageContent {
@@ -40,10 +43,14 @@ export function stripReplyFallback(body: string): string {
 export function toLine(ev: IRoomEvent): Line | null {
     if (ev.type !== "m.room.message") return null;
     const c = (ev.content ?? {}) as MessageContent;
-    if (c.msgtype !== "m.text" && c.msgtype !== "m.notice") return null;
-    if (typeof c.body !== "string") return null;
     // Edits arrive as new events; keeping only originals is good enough here.
     if (c["m.relates_to"]?.rel_type === "m.replace") return null;
+    const media = toMedia(c);
+    if (media) {
+        return { eventId: ev.event_id, sender: ev.sender, body: describe(media), ts: ev.origin_server_ts ?? 0, fromModel: false, media };
+    }
+    if (c.msgtype !== "m.text" && c.msgtype !== "m.notice") return null;
+    if (typeof c.body !== "string") return null;
     const fromModel = c.msgtype === "m.notice" && MARKER in c;
     return {
         eventId: ev.event_id,

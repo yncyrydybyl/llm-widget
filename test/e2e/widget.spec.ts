@@ -46,6 +46,10 @@ test("requests exactly the capabilities it needs", async ({ page }) => {
             "org.matrix.msc2762.receive.event:m.room.message#m.text",
             "org.matrix.msc2762.receive.event:m.room.message#m.notice",
             "org.matrix.msc2762.send.event:m.room.message#m.notice",
+            "org.matrix.msc2762.receive.event:m.room.message#m.audio",
+            "org.matrix.msc2762.receive.event:m.room.message#m.image",
+            "org.matrix.msc2762.receive.event:m.room.message#m.file",
+            "org.matrix.msc4039.download_file",
             "org.matrix.msc2762.send.event:de.minagawa.llm_widget.presence",
             "org.matrix.msc2762.receive.event:de.minagawa.llm_widget.presence",
         ].sort(),
@@ -151,4 +155,47 @@ test("shortcuts: translating a replied-to message, and help without a model", as
     const body = String((await messages(page))[1].content.body);
     expect(body).toContain("Translate this text into English");
     expect(body).toContain("0 lines of context");
+});
+
+/** Encrypts like a Matrix client: AES-CTR-256, SHA-256 over the ciphertext. */
+async function encryptFile(text: string) {
+    const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64").replace(/=+$/, "");
+    const raw = crypto.getRandomValues(new Uint8Array(32));
+    const iv = new Uint8Array(16);
+    iv.set(crypto.getRandomValues(new Uint8Array(8)));
+    const key = await crypto.subtle.importKey("raw", raw, { name: "AES-CTR" }, false, ["encrypt"]);
+    const data = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-CTR", counter: iv, length: 64 }, key, new TextEncoder().encode(text)));
+    const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+    return {
+        body: Buffer.from(data).toString("base64"),
+        file: { url: "mxc://example.org/secret", key: { kty: "oct", alg: "A256CTR", k: b64(raw).replace(/\+/g, "-").replace(/\//g, "_"), ext: true }, iv: b64(iv), hashes: { sha256: b64(hash) }, v: "v2" },
+    };
+}
+
+test("reads an encrypted text file it is asked about", async ({ page }) => {
+    const enc = await encryptFile("Agenda: budget 5k, launch on Friday.");
+    const file = {
+        type: "m.room.message",
+        event_id: "$f",
+        room_id: "!room:example.org",
+        sender: "@bob:example.org",
+        origin_server_ts: 1,
+        content: { msgtype: "m.file", body: "agenda.txt", info: { mimetype: "text/plain" }, file: enc.file },
+        unsigned: {},
+    };
+    const w = await open(page, { params: { engine: "echo", matrix_user_id: ME }, events: [file], bodies: { "mxc://example.org/secret": enc.body } });
+    await expect(w.getByText("in room")).toBeVisible();
+
+    // read: the decrypted text as it is, no model needed.
+    await push(page, msg("$r", "!ai read", 2));
+    await expect.poll(async () => (await messages(page)).length, { timeout: 5000 }).toBe(1);
+    expect((await messages(page))[0].content.body).toBe("Agenda: budget 5k, launch on Friday.");
+
+    // A question sent as a reply to the file gets its text as the subject.
+    await w.getByRole("button", { name: "Load model" }).click();
+    const q = msg("$q", "!ai what is the budget?", 3);
+    (q.content as Record<string, unknown>)["m.relates_to"] = { "m.in_reply_to": { event_id: "$f" } };
+    await push(page, q);
+    await expect.poll(async () => (await messages(page)).length, { timeout: 5000 }).toBe(2);
+    expect(String((await messages(page))[1].content.body)).toContain("what is the budget?");
 });

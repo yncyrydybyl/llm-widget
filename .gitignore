@@ -3,3 +3,5 @@ dist/
 test-results/
 playwright-report/
 test/real/screenshot.png
+public/vendor/
+test/real/media.png

@@ -43,6 +43,14 @@ export const CAPABILITIES: Capability[] = [
     // Post answers. Notices, not text: clients render them as machine output and
     // bots conventionally never react to them, so two widgets cannot loop.
     WidgetEventCapability.forRoomMessageEvent(EventDirection.Send, "m.notice").raw as Capability,
+    // Attachments the model can read when asked: voice messages (transcribed
+    // locally with Whisper), images (OCR), PDFs and text files. Downloaded through
+    // the client; in an encrypted room the widget decrypts them with the file
+    // key from the event.
+    WidgetEventCapability.forRoomMessageEvent(EventDirection.Receive, "m.audio").raw as Capability,
+    WidgetEventCapability.forRoomMessageEvent(EventDirection.Receive, "m.image").raw as Capability,
+    WidgetEventCapability.forRoomMessageEvent(EventDirection.Receive, "m.file").raw as Capability,
+    "org.matrix.msc4039.download_file" as Capability,
     // Presence: which widgets are open, which can answer, and what each device
     // has donated. A custom timeline event type that clients do not render.
     WidgetEventCapability.forRoomEvent(EventDirection.Send, PRESENCE_TYPE).raw as Capability,

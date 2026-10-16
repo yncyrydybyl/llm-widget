@@ -3,6 +3,7 @@
     import { sizeMB } from "./llm";
     import { displayName } from "./room";
     import { COMMANDS } from "./commands";
+    import { RECOGNISERS, VOICES } from "./ml";
 
     let { c }: { c: Controller } = $props();
 
@@ -41,6 +42,24 @@
 
     function changed(): void {
         c.saveSettings();
+    }
+
+    /** Job id being read aloud, and what the voice is doing. */
+    let speaking = $state<number | null>(null);
+    let speakNote = $state("");
+    async function readAloud(id: number, text: string): Promise<void> {
+        if (speaking !== null) return;
+        speaking = id;
+        speakNote = "Preparing voice…";
+        try {
+            await c.readAloud(text, (t) => (speakNote = t));
+        } catch (e) {
+            speakNote = `Could not read aloud: ${e instanceof Error ? e.message : String(e)}`;
+            return;
+        } finally {
+            if (!speakNote.startsWith("Could not")) speakNote = "";
+            speaking = null;
+        }
     }
 </script>
 
@@ -165,6 +184,23 @@
                 <button type="button" class="link" onclick={() => { delete c.settings.chunks[c.model]; changed(); }}>reset</button>
             </p>
         {/if}
+        <label class="check">
+            <input type="checkbox" bind:checked={c.settings.search} onchange={changed} />
+            <span>Search older messages and long documents for what a question needs (downloads 120 MB once; runs on the CPU)</span>
+        </label>
+        <label>
+            <span>Voice messages</span>
+            <select bind:value={c.settings.recogniser} onchange={changed}>
+                {#each RECOGNISERS as r (r.id)}<option value={r.id}>{r.label}</option>{/each}
+            </select>
+        </label>
+        <label>
+            <span>Read aloud with</span>
+            <select bind:value={c.settings.voice} onchange={changed}>
+                <option value="auto">Automatic (German or English voice)</option>
+                {#each VOICES as v (v.id)}<option value={v.id}>{v.label}</option>{/each}
+            </select>
+        </label>
         <label>
             <span>Context: last</span>
             <input type="number" min="0" max="50" bind:value={c.settings.contextSize} onchange={changed} />
@@ -223,6 +259,14 @@
                     <p class="small muted">{tokens(j.usage.promptTokens)} tokens read · {tokens(j.usage.completionTokens)} written · {duration(j.ms)}</p>
                 {/if}
                 {#if j.output}<p class="answer">{j.output}</p>{/if}
+                {#if j.output && (j.status === "posted" || j.status === "done")}
+                    <div class="actions">
+                        <button type="button" class="link" onclick={() => readAloud(j.id, j.output)} disabled={speaking !== null}>
+                            {speaking === j.id ? "reading…" : "read aloud"}
+                        </button>
+                        {#if speaking === j.id || (speakNote.startsWith("Could not") && speaking === null)}<span class="small muted">{speakNote}</span>{/if}
+                    </div>
+                {/if}
                 {#if j.error}<p class="small warn">{j.error}</p>{/if}
             </article>
         {/each}

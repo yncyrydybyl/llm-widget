@@ -20,7 +20,7 @@ const MODEL_HOSTS = [
 ].join(" ");
 
 const CSP =
-    "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; " +
+    "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; media-src blob:; " +
     `font-src 'self'; connect-src 'self' ${MODEL_HOSTS}; worker-src 'self'; object-src 'none'; ` +
     "frame-src 'none'; form-action 'none'; base-uri 'none'; manifest-src 'none'";
 

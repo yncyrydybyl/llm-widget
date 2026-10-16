@@ -18,10 +18,16 @@ import {
     type Donor,
     type Summary,
 } from "./presence";
+import { download, readable } from "./media";
+import { RECOGNISERS, VOICES, embed, guessLanguage, ocr, pdfText, speak, transcribe } from "./ml";
+import { chunk, dot, excerpts, topK } from "./search";
 import {
     Transcript,
     answerContent,
     buildPrompt,
+    splitText,
+    type ChatMessage,
+    type Subject,
     parseTrigger,
     stripThinking,
     toLine,
@@ -58,6 +64,12 @@ export interface Settings {
     answerEveryone: boolean;
     postToRoom: boolean;
     contextSize: number;
+    /** Find relevant older messages and document parts with embeddings (downloads a small model). */
+    search: boolean;
+    /** Piper voice for reading answers aloud; "auto" picks by language. */
+    voice: string;
+    /** Whisper variant for voice messages (ml.ts RECOGNISERS). */
+    recogniser: string;
     /** Per model (WebLLM id): the largest prompt part this GPU processes in one pass. */
     chunks: Record<string, number>;
 }
@@ -82,6 +94,14 @@ const MIN_CHUNK = 300;
 const MAX_GPU_RETRIES = 4;
 const isGpuLoss = (msg: string): boolean => /device (was )?lost|GPUBuffer|mapAsync|DEVICE_LOST/i.test(msg);
 const LOCAL_USER = "@you:local";
+/** A subject (document, transcript) longer than this is digested or searched rather than cut. */
+const SUBJECT_MAX = 5000;
+/** Digest at most this many parts of a long document, one model call each. */
+const MAX_DIGEST_PARTS = 8;
+/** Extracted text posted as is (transcribe, read) is cut here. */
+const MAX_EXTRACT_POST = 8000;
+/** Older messages added to the context when searching the history. */
+const RELEVANT_LINES = 6;
 const DEVICE_KEY = "llm-widget.device";
 const DONATED_KEY = "llm-widget.donated";
 
@@ -128,6 +148,9 @@ function loadSettings(): Settings {
         answerEveryone: false,
         postToRoom: true,
         contextSize: 30,
+        search: false,
+        voice: "auto",
+        recogniser: "base",
         chunks: {},
     };
     try {
@@ -177,6 +200,10 @@ export class Controller {
     private api: WidgetApi | null = null;
     private engine: Engine | null = null;
     private transcript = new Transcript();
+    /** Text of attachments, by event id: transcripts, OCR, PDF text. */
+    private extracted = new Map<string, Promise<string>>();
+    /** Embeddings of room messages, by event id. */
+    private vectors = new Map<string, number[]>();
     /** Events read as history at startup: context only, never answered. */
     private live = false;
     private nextJob = 1;
@@ -315,7 +342,7 @@ export class Controller {
 
     private async readHistory(): Promise<void> {
         if (!this.api) return;
-        for (const msgtype of ["m.text", "m.notice"]) {
+        for (const msgtype of ["m.text", "m.notice", "m.audio", "m.image", "m.file"]) {
             try {
                 const events = await this.api.readRoomEvents("m.room.message", 50, msgtype);
                 for (const ev of events) this.onRoomEvent(ev, false);
@@ -361,7 +388,54 @@ export class Controller {
         const id = this.nextJob++;
         this.jobs = [{ ...j, id, status: "waiting" as JobStatus, output: "" }, ...this.jobs].slice(0, 50);
         if (j.plan.fixed !== undefined) void this.answerFixed(id, j.plan.fixed);
+        else if (j.plan.extract) void this.answerExtract(id);
         else void this.pump();
+    }
+
+    /** Transcripts and OCR: posted as they are, without waiting for the LLM. */
+    private async answerExtract(id: number): Promise<void> {
+        const j = this.job(id)!;
+        j.status = "generating";
+        try {
+            const text = (await this.textOf(id, j.plan.target!)) || "(no text found)";
+            const cut = text.length > MAX_EXTRACT_POST;
+            j.output = cut ? `${text.slice(0, MAX_EXTRACT_POST)}\n[…${text.length - MAX_EXTRACT_POST} more characters]` : text;
+            j.note = undefined;
+            await this.deliver(j, j.output, "");
+        } catch (e) {
+            j.status = "error";
+            j.error = e instanceof Error ? e.message : String(e);
+        }
+    }
+
+    /** The text of an attachment, extracted once per event. */
+    private textOf(id: number, target: NonNullable<Plan["target"]>): Promise<string> {
+        const note = (text: string): void => {
+            const j = this.job(id);
+            if (j) j.note = text;
+        };
+        const media = target.media;
+        if (!media) return Promise.resolve(target.body);
+        let p = this.extracted.get(target.eventId);
+        if (!p) {
+            p = (async () => {
+                if (!this.api) throw new Error("Attachments can only be read inside a room.");
+                const how = readable(media);
+                if (!how) throw new Error(`Cannot read ${media.name}.`);
+                note(`Downloading ${media.name}…`);
+                const blob = await download(this.api, media);
+                if (how === "text") return (await blob.text()).trim();
+                if (how === "pdf") return pdfText(blob, note);
+                if (how === "ocr") return ocr(blob, note);
+                const rec = RECOGNISERS.find((r) => r.id === this.settings.recogniser) ?? RECOGNISERS[0];
+                // The room's language: the small Whisper models misdetect short messages.
+                const recent = this.transcript.lines().filter((l) => !l.media && !l.fromModel).slice(-30).map((l) => l.body).join(" ");
+                return transcribe(blob, rec, note, guessLanguage(recent));
+            })();
+            this.extracted.set(target.eventId, p);
+            p.catch(() => this.extracted.delete(target.eventId));
+        }
+        return p;
     }
 
     /** Help and usage errors: no model needed, so not queued behind generations. */
@@ -392,7 +466,11 @@ export class Controller {
             this.abort = new AbortController();
             const started = performance.now();
             let usage: Usage | undefined;
-            const raw = await this.generate(id, engine, next, (u) => (usage = u));
+            const add = (u: Usage): void => {
+                usage = { promptTokens: (usage?.promptTokens ?? 0) + u.promptTokens, completionTokens: (usage?.completionTokens ?? 0) + u.completionTokens };
+            };
+            const prep = await this.prepare(id, engine, next, add);
+            const raw = await this.generate(id, engine, next, prep, add);
             const j0 = this.job(id);
             if (j0) {
                 j0.usage = usage;
@@ -420,15 +498,102 @@ export class Controller {
         }
     }
 
+    /**
+     * What the model reads besides the recent conversation: the subject (an
+     * attachment's text, digested or searched when long) and, with search on,
+     * the older messages most related to a question.
+     */
+    private async prepare(id: number, engine: Engine, request: Job, onUsage: (u: Usage) => void): Promise<{ subject?: Subject; lines: Line[] }> {
+        const { plan } = request;
+        const note = (text: string): void => {
+            const j = this.job(id);
+            if (j) j.note = text;
+        };
+        let lines = this.transcript.lines();
+        let subject: Subject | undefined = plan.text ? { from: null, body: plan.text } : undefined;
+        if (plan.target) {
+            const body = await this.textOf(id, plan.target);
+            subject = { from: plan.target.media ? `${plan.target.sender} (${plan.target.body})` : plan.target.sender, body };
+        }
+        if (subject && subject.body.length > SUBJECT_MAX) {
+            if (plan.command === null && this.settings.search) {
+                note("Searching the document for the relevant parts…");
+                const parts = chunk(subject.body);
+                const [q] = await embed([plan.instruction], "query", note);
+                const vs = await embed(parts, "passage", note);
+                subject = { ...subject, body: excerpts(parts, vs.map((v) => dot(q, v)), SUBJECT_MAX) };
+            } else {
+                subject = { ...subject, body: await this.digest(id, engine, subject.body, onUsage) };
+            }
+        }
+        if (this.settings.search && plan.command === null && plan.scope === "recent") lines = await this.withRelevant(lines, request, note);
+        return { subject, lines };
+    }
+
+    /** Summarises a long text part by part; the answer is then built from the summaries. */
+    private async digest(id: number, engine: Engine, text: string, onUsage: (u: Usage) => void): Promise<string> {
+        const all = splitText(text, SUBJECT_MAX - 500);
+        const parts = all.slice(0, MAX_DIGEST_PARTS);
+        const out: string[] = [];
+        for (let i = 0; i < parts.length; i++) {
+            const j = this.job(id);
+            if (j) j.note = `Long text: summarising part ${i + 1} of ${parts.length}${all.length > parts.length ? ` (of ${all.length}; the rest is skipped)` : ""}…`;
+            const messages: ChatMessage[] = [
+                { role: "system", content: "You summarise documents faithfully and never add facts." },
+                {
+                    role: "user",
+                    content: `Part ${i + 1} of ${parts.length} of a document:\n<document>\n${parts[i]}\n</document>\n\nSummarise this part in at most six bullet points, in its own language. Keep names, numbers and dates.`,
+                },
+            ];
+            const r = await engine.chat(messages, () => undefined, { signal: this.abort?.signal, chunkChars: this.settings.chunks[engine.modelId], onUsage });
+            if (this.abort?.signal.aborted) throw new Error("Stopped.");
+            out.push(`Summary of part ${i + 1}:\n${stripThinking(r)}`);
+        }
+        return out.join("\n\n");
+    }
+
+    /** The recent window plus the older messages closest to the question. */
+    private async withRelevant(lines: Line[], request: Job, note: (t: string) => void): Promise<Line[]> {
+        const end = request.triggerEventId ? lines.findIndex((l) => l.eventId === request.triggerEventId) : lines.length;
+        const before = lines.slice(0, end === -1 ? lines.length : end);
+        const older = before.slice(0, Math.max(0, before.length - this.settings.contextSize)).filter((l) => !l.media);
+        if (!older.length) return lines;
+        const missing = older.filter((l) => !this.vectors.has(l.eventId));
+        if (missing.length) {
+            note(`Indexing ${missing.length} older messages…`);
+            for (let i = 0; i < missing.length; i += 32) {
+                const batch = missing.slice(i, i + 32);
+                const vs = await embed(batch.map((l) => l.body.slice(0, 1000)), "passage", note);
+                batch.forEach((l, k) => this.vectors.set(l.eventId, vs[k]));
+            }
+        }
+        const [q] = await embed([request.plan.instruction], "query", note);
+        const keep = new Set(topK(older.map((l) => dot(q, this.vectors.get(l.eventId)!)), RELEVANT_LINES).map((i) => older[i].eventId));
+        note(`Found ${keep.size} related older messages.`);
+        // Recent window, the related older lines, and everything after (the trigger).
+        const recentFrom = before.length - this.settings.contextSize;
+        return lines.filter((l, i) => i >= recentFrom || keep.has(l.eventId));
+    }
+
     /** Generates within the window, shrinking the prompt when the model says it is too long. */
-    private async generate(id: number, engine: Engine, request: Job, onUsage: (u: Usage) => void): Promise<string> {
+    private async generate(
+        id: number,
+        engine: Engine,
+        request: Job,
+        prep: { subject?: Subject; lines: Line[] },
+        onUsage: (u: Usage) => void,
+    ): Promise<string> {
         for (let budget = PROMPT_BUDGET; ; budget = Math.floor(budget / 2)) {
             const { plan } = request;
-            const subject = plan.text ? { from: null, body: plan.text } : plan.target ? { from: plan.target.sender, body: plan.target.body } : undefined;
+            const { subject } = prep;
             const prompt = buildPrompt(
-                this.transcript.lines(),
+                prep.lines,
                 { sender: request.sender, question: plan.instruction, triggerEventId: request.triggerEventId, subject, scope: plan.scope },
-                { prefix: this.settings.prefix, maxLines: plan.maxLines ?? this.settings.contextSize, budgetChars: budget },
+                {
+                    prefix: this.settings.prefix,
+                    maxLines: (plan.maxLines ?? this.settings.contextSize) + (prep.lines.length < this.transcript.lines().length ? RELEVANT_LINES : 0),
+                    budgetChars: budget,
+                },
             );
             const j = this.job(id);
             const shortened = prompt.truncated ? "Request shortened to fit the model; " : "";
@@ -526,6 +691,24 @@ export class Controller {
         });
         saveDonated(this.widgetId, this.donated);
         this.announceSoon();
+    }
+
+    /** Reads text aloud with Piper, on the CPU. Resolves when playback ends. */
+    async readAloud(text: string, onNote?: (t: string) => void): Promise<void> {
+        const lang = guessLanguage(text) === "german" ? "de" : "en";
+        const voice = VOICES.find((v) => v.id === this.settings.voice) ?? VOICES.find((v) => v.lang === lang)!;
+        const wav = await speak(text.replace(/[*_#`>]/g, ""), voice.id, onNote);
+        const url = URL.createObjectURL(wav);
+        try {
+            const audio = new Audio(url);
+            await audio.play();
+            await new Promise<void>((resolve) => {
+                audio.onended = () => resolve();
+                audio.onerror = () => resolve();
+            });
+        } finally {
+            URL.revokeObjectURL(url);
+        }
     }
 
     stop(): void {

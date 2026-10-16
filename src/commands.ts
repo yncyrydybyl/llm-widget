@@ -9,6 +9,7 @@
  *
  * Pure, like room.ts.
  */
+import { readable, type Media } from "./media";
 import { displayName, parseTrigger, type Line } from "./room";
 
 /** How much of the conversation goes into the prompt. */
@@ -22,8 +23,10 @@ export interface Plan {
     scope: Scope;
     /** Overrides the context size setting (`!ai sum 10`). */
     maxLines?: number;
-    /** The message to work on. */
-    target?: { sender: string; body: string };
+    /** The message to work on; with `media`, its text comes from the attachment. */
+    target?: { eventId: string; sender: string; body: string; media?: Media };
+    /** Post the attachment's text as it is (transcript, OCR), without the LLM. */
+    extract?: boolean;
     /** Text given inline to work on (`!ai fix their is a problem`). */
     text?: string;
     /** An answer that needs no model (help, usage errors). */
@@ -39,6 +42,8 @@ interface Command {
     scope: Scope;
     /** `args` is what follows the command name; `text` the message worked on, if any. */
     instruction: (args: string) => string | { error: string };
+    /** Only for voice messages, images and files: post their text as is. */
+    extract?: boolean;
 }
 
 const IN_ROOM_LANGUAGE = "Write in the language the conversation is mostly written in.";
@@ -67,6 +72,24 @@ export function languageName(code: string): string | null {
 }
 
 export const COMMANDS: Command[] = [
+    {
+        names: ["transcribe", "tx", "transkribiere"],
+        usage: "transcribe",
+        help: "write out a voice message",
+        needsText: true,
+        extract: true,
+        scope: "none",
+        instruction: () => "",
+    },
+    {
+        names: ["read", "ocr"],
+        usage: "read",
+        help: "the text of an image (OCR), PDF or text file",
+        needsText: true,
+        extract: true,
+        scope: "none",
+        instruction: () => "",
+    },
     {
         names: ["sum", "summary", "summarise", "summarize", "zusammenfassung"],
         usage: "sum [n]",
@@ -231,14 +254,16 @@ export function helpText(prefix: string): string {
     ].join("\n");
 }
 
-/** The line just before `beforeEventId` that is not itself a request. */
-function previous(all: Line[], beforeEventId: string | null, prefix: string): Line | undefined {
+/** The line just before `beforeEventId` that is not itself a request (with `media`: the last attachment). */
+function previous(all: Line[], beforeEventId: string | null, prefix: string, media = false): Line | undefined {
     let end = all.length;
     if (beforeEventId) {
         const i = all.findIndex((l) => l.eventId === beforeEventId);
         if (i !== -1) end = i;
     }
-    for (let i = end - 1; i >= 0; i--) if (all[i].fromModel || parseTrigger(all[i].body, prefix) === null) return all[i];
+    for (let i = end - 1; i >= 0; i--) {
+        if (media ? all[i].media : all[i].fromModel || parseTrigger(all[i].body, prefix) === null) return all[i];
+    }
     return undefined;
 }
 
@@ -248,7 +273,8 @@ function previous(all: Line[], beforeEventId: string | null, prefix: string): Li
  */
 export function plan(question: string, all: Line[], trigger: Line | null, prefix: string): Plan {
     const replied = trigger?.inReplyTo ? all.find((l) => l.eventId === trigger.inReplyTo) : undefined;
-    const asTarget = (l: Line | undefined) => (l ? { sender: l.fromModel ? "assistant" : displayName(l.sender), body: l.body } : undefined);
+    const asTarget = (l: Line | undefined) =>
+        l ? { eventId: l.eventId, sender: l.fromModel ? "assistant" : displayName(l.sender), body: l.body, media: l.media } : undefined;
 
     const [word = "", ...restWords] = question.split(/\s+/);
     const rest = question.slice(word.length).trim();
@@ -288,12 +314,23 @@ export function plan(question: string, all: Line[], trigger: Line | null, prefix
     else if (cmd.instruction.length === 0 && !cmd.needsText && rest) p.instruction += ` Focus on: ${rest}.`;
     // Catching up may span more than the usual context; the host returns at most 50.
     if (cmd.scope === "since-mine") p.maxLines = 50;
-    if (text) p.text = text;
+    if (text && !cmd.extract) p.text = text;
     else if (replied) p.target = asTarget(replied);
     else if (cmd.needsText) {
-        const before = previous(all, trigger?.eventId ?? null, prefix);
-        if (!before) return { command: name, instruction: "", scope: "none", fixed: `Nothing to work on: reply to a message with ${prefix} ${cmd.usage}.` };
-        p.target = asTarget(before);
+        const before = previous(all, trigger?.eventId ?? null, prefix, !!cmd.extract);
+        if (!before && !cmd.extract) return { command: name, instruction: "", scope: "none", fixed: `Nothing to work on: reply to a message with ${prefix} ${cmd.usage}.` };
+        if (before) p.target = asTarget(before);
+    }
+    if (cmd.extract) {
+        const media = p.target?.media;
+        if (!media || !readable(media))
+            return { command: name, instruction: "", scope: "none", fixed: `Reply to a voice message, image, PDF or text file with ${prefix} ${cmd.usage}.` };
+        p.extract = true;
+    }
+    // "sum" on an attachment means the attachment, not the conversation.
+    if (name === "sum" && p.target?.media) {
+        p.instruction = `Summarise this text in a few bullet points, in its own language.${count ? "" : rest ? ` Focus on: ${rest}.` : ""}`;
+        p.scope = "none";
     }
     return p;
 }
