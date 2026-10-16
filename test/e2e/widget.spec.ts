@@ -129,3 +129,26 @@ test("counts the widgets in the room and answers a newcomer's probe", async ({ p
     await expect(w.getByRole("row", { name: /bob/ })).toContainText("12.0 s");
     await expect(w.getByRole("row", { name: /alice/ })).toBeVisible();
 });
+
+test("shortcuts: translating a replied-to message, and help without a model", async ({ page }) => {
+    const w = await open(page, {
+        params: { engine: "echo", matrix_user_id: ME },
+        events: [msg("$1", "Wir treffen uns um drei", 1, "@bob:example.org"), msg("$2", "unrelated", 2)],
+    });
+    await expect(w.getByText("in room")).toBeVisible();
+
+    // Help is answered at once, before any model is loaded.
+    await push(page, msg("$h", "!ai help", 3));
+    await expect.poll(async () => (await messages(page)).length, { timeout: 5000 }).toBe(1);
+    expect(String((await messages(page))[0].content.body)).toContain("!ai tr <language> [text]");
+
+    await w.getByRole("button", { name: "Load model" }).click();
+    const reply = msg("$t", "!ai tr en", 4);
+    (reply.content as Record<string, unknown>)["m.relates_to"] = { "m.in_reply_to": { event_id: "$1" } };
+    await push(page, reply);
+    await expect.poll(async () => (await messages(page)).length, { timeout: 5000 }).toBe(2);
+    // The echo engine repeats the request; the subject went in the prompt instead of the room history.
+    const body = String((await messages(page))[1].content.body);
+    expect(body).toContain("Translate this text into English");
+    expect(body).toContain("0 lines of context");
+});

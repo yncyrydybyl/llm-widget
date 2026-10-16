@@ -2,6 +2,7 @@
     import type { Controller, JobStatus } from "./controller.svelte";
     import { sizeMB } from "./llm";
     import { displayName } from "./room";
+    import { COMMANDS } from "./commands";
 
     let { c }: { c: Controller } = $props();
 
@@ -175,7 +176,7 @@
         <input
             type="text"
             bind:value={draft}
-            placeholder={embedded ? "Ask about this room (private)…" : `Type a message; start with ${c.settings.prefix} to ask the model`}
+            placeholder={embedded ? "Ask about this room, or a shortcut like sum (private)…" : `Type a message; start with ${c.settings.prefix} to ask the model`}
             aria-label={embedded ? "Private question" : "Message"}
         />
         <button type="submit" disabled={!draft.trim()}>{embedded ? "Ask" : "Send"}</button>
@@ -185,8 +186,26 @@
         <p class="small muted">
             In the room, write <code>{c.settings.prefix} your question</code>. The model reads the
             last {c.settings.contextSize} messages and replies{c.settings.postToRoom ? " as a notice" : " here"}.
+            Send it as a reply to make that message the one it works on.
         </p>
     {/if}
+
+    <details class="shortcuts">
+        <summary>Shortcuts</summary>
+        <dl>
+            {#each COMMANDS as cmd (cmd.names[0])}
+                <dt><code>{c.settings.prefix} {cmd.usage}</code></dt>
+                <dd>{cmd.help}</dd>
+            {/each}
+            <dt><code>{c.settings.prefix} help</code></dt>
+            <dd>post this list to the room</dd>
+        </dl>
+        <p class="small muted">
+            Commands that work on a message use the one you reply to, else text after the command,
+            else the message just before. Words after other commands set the focus, e.g.
+            <code>{c.settings.prefix} sum the budget</code>.
+        </p>
+    </details>
 
     <section class="jobs" aria-live="polite">
         {#each c.jobs as j (j.id)}

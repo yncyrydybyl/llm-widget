@@ -5,6 +5,7 @@
 import type { IRoomEvent, WidgetApi } from "matrix-widget-api";
 import { CAPABILITIES, connect, initialTheme, readParams, type Params } from "./widget-connect";
 import { DEFAULT_MODEL, EchoEngine, MODELS, availableModels, isCached, loadWebLlm, webGpuStatus, webLlmId, type Engine, type ModelInfo, type Usage } from "./llm";
+import { plan, type Plan } from "./commands";
 import {
     HEARTBEAT_MS,
     NO_DONATION,
@@ -35,6 +36,8 @@ export interface Job {
     id: number;
     sender: string;
     question: string;
+    /** What the question asks the model to do, resolved when the job is created. */
+    plan: Plan;
     /** The room message that asked; null for a private question. */
     triggerEventId: string | null;
     status: JobStatus;
@@ -336,7 +339,7 @@ export class Controller {
         if (question === null) return;
         const mine = !this.userId || line.sender === this.userId || this.room === "standalone";
         if (!mine && !this.answersOthers) return;
-        this.enqueue({ sender: line.sender, question, triggerEventId: line.eventId });
+        this.enqueue({ sender: line.sender, question, triggerEventId: line.eventId, plan: plan(question, this.transcript.lines(), line, this.settings.prefix) });
     }
 
     /** Standalone: a local message, handled exactly like a room message. */
@@ -349,12 +352,27 @@ export class Controller {
 
     /** In a room: ask about the conversation without posting anything. */
     askPrivately(question: string): void {
-        this.enqueue({ sender: this.userId ?? LOCAL_USER, question, triggerEventId: null });
+        // The question box takes the same shortcuts, without the trigger.
+        const q = parseTrigger(question, this.settings.prefix) ?? question;
+        this.enqueue({ sender: this.userId ?? LOCAL_USER, question: q, triggerEventId: null, plan: plan(q, this.transcript.lines(), null, this.settings.prefix) });
     }
 
     private enqueue(j: Omit<Job, "id" | "status" | "output">): void {
-        this.jobs = [{ ...j, id: this.nextJob++, status: "waiting" as JobStatus, output: "" }, ...this.jobs].slice(0, 50);
-        void this.pump();
+        const id = this.nextJob++;
+        this.jobs = [{ ...j, id, status: "waiting" as JobStatus, output: "" }, ...this.jobs].slice(0, 50);
+        if (j.plan.fixed !== undefined) void this.answerFixed(id, j.plan.fixed);
+        else void this.pump();
+    }
+
+    /** Help and usage errors: no model needed, so not queued behind generations. */
+    private async answerFixed(id: number, text: string): Promise<void> {
+        const j = this.job(id)!;
+        j.status = "generating";
+        j.output = text;
+        // Every open widget may answer; a random pause lets the first answer
+        // arrive so the others see it and stay quiet.
+        if (j.triggerEventId && this.api) await new Promise((r) => setTimeout(r, Math.random() * 3000));
+        await this.deliver(j, text, "");
     }
 
     private job(id: number): Job | undefined {
@@ -405,11 +423,13 @@ export class Controller {
     /** Generates within the window, shrinking the prompt when the model says it is too long. */
     private async generate(id: number, engine: Engine, request: Job, onUsage: (u: Usage) => void): Promise<string> {
         for (let budget = PROMPT_BUDGET; ; budget = Math.floor(budget / 2)) {
-            const prompt = buildPrompt(this.transcript.lines(), request, {
-                prefix: this.settings.prefix,
-                maxLines: this.settings.contextSize,
-                budgetChars: budget,
-            });
+            const { plan } = request;
+            const subject = plan.text ? { from: null, body: plan.text } : plan.target ? { from: plan.target.sender, body: plan.target.body } : undefined;
+            const prompt = buildPrompt(
+                this.transcript.lines(),
+                { sender: request.sender, question: plan.instruction, triggerEventId: request.triggerEventId, subject, scope: plan.scope },
+                { prefix: this.settings.prefix, maxLines: plan.maxLines ?? this.settings.contextSize, budgetChars: budget },
+            );
             const j = this.job(id);
             const shortened = prompt.truncated ? "Request shortened to fit the model; " : "";
             const reset = j?.gpuRetries ? `retry ${j.gpuRetries} after a GPU reset; ` : "";
@@ -495,7 +515,9 @@ export class Controller {
         }
         await this.api.sendRoomEvent("m.room.message", answerContent(answer, trigger, model, { usage: j.usage, ms: j.ms }));
         j.status = "posted";
-        // Only answers posted to the room count as donated; private questions are one's own.
+        // Only model answers posted to the room count as donated; private
+        // questions are one's own, and help texts cost nothing.
+        if (!j.usage) return;
         this.donated = addDonation(this.donated, {
             answers: 1,
             promptTokens: j.usage?.promptTokens ?? 0,

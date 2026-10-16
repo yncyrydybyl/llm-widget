@@ -55,7 +55,7 @@ try {
 }
 console.log(`loaded in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
 if (!process.exitCode) {
-    const q = "!ai " + (process.env.LONG ? "Lorem ipsum dolor sit amet, Hannover 96 Mediadaten Karriere. ".repeat(Number(process.env.LONG)) + " Summarise this." : "where and when is lunch?");
+    const q = process.env.Q ? `!ai ${process.env.Q}` : "!ai " + (process.env.LONG ? "Lorem ipsum dolor sit amet, Hannover 96 Mediadaten Karriere. ".repeat(Number(process.env.LONG)) + " Summarise this." : "where and when is lunch?");
     await page.evaluate((q) => window.__toWidget("send_event", { type: "m.room.message", event_id: "$3", room_id: "!room:example.org", sender: "@alice:example.org", origin_server_ts: 3, content: { msgtype: "m.text", body: q }, unsigned: {} }), q);
     const t1 = Date.now();
     try {

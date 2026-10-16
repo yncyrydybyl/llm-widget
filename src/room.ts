@@ -100,7 +100,7 @@ export function displayName(userId: string): string {
 export const SYSTEM_PROMPT =
     "You are a helpful assistant taking part in a Matrix group chat. " +
     "You are given the recent conversation and a request from one participant. " +
-    "Answer the request directly and concisely, in the language of the request. " +
+    "Answer the request directly and concisely, in the language of the request unless it asks for another. " +
     "Use the conversation as context; do not invent messages that are not in it.";
 
 export interface ChatMessage {
@@ -146,22 +146,43 @@ export function formatTranscript(lines: Line[], prefix: string): string {
         .join("\n");
 }
 
+/** The message a request works on: the one replied to, or text given inline (from: null). */
+export interface Subject {
+    from: string | null;
+    body: string;
+}
+
+/** Context lines after the requester's own last message (for "catch me up"). */
+export function sinceMine(context: Line[], sender: string): Line[] {
+    for (let i = context.length - 1; i >= 0; i--) if (context[i].sender === sender && !context[i].fromModel) return context.slice(i + 1);
+    return context;
+}
+
+/**
+ * System prompt plus one user message: the conversation (unless `context` is
+ * null), the subject if any, and the request last. prefillRounds relies on the
+ * request starting with "\n\nRequest from ".
+ */
 export function buildMessages(
-    context: Line[],
-    request: { sender: string; question: string },
+    context: Line[] | null,
+    request: { sender: string; question: string; subject?: Subject },
     prefix: string,
     systemPrompt = SYSTEM_PROMPT,
 ): ChatMessage[] {
     const question = request.question || "Summarise the conversation so far.";
-    const transcript = context.length ? formatTranscript(context, prefix) : "(no earlier messages)";
+    const parts: string[] = [];
+    if (context) {
+        const transcript = context.length ? formatTranscript(context, prefix) : "(no earlier messages)";
+        parts.push(`Recent conversation:\n<conversation>\n${transcript}\n</conversation>`);
+    }
+    if (request.subject) {
+        const label = request.subject.from ? `The message in question, from ${request.subject.from}:` : "The text:";
+        parts.push(`${label}\n<message>\n${request.subject.body}\n</message>`);
+    }
+    parts.push(`Request from ${displayName(request.sender)}: ${question}`);
     return [
         { role: "system", content: systemPrompt },
-        {
-            role: "user",
-            content:
-                `Recent conversation:\n<conversation>\n${transcript}\n</conversation>\n\n` +
-                `Request from ${displayName(request.sender)}: ${question}`,
-        },
+        { role: "user", content: parts.join("\n\n") },
     ];
 }
 
@@ -186,16 +207,32 @@ export interface Prompt {
  */
 export function buildPrompt(
     all: Line[],
-    request: { sender: string; question: string; triggerEventId: string | null },
+    request: {
+        sender: string;
+        question: string;
+        triggerEventId: string | null;
+        subject?: Subject;
+        /** "none" leaves the conversation out; "since-mine" keeps what came after the requester's last message. */
+        scope?: "recent" | "since-mine" | "none";
+    },
     opts: { prefix: string; maxLines: number; budgetChars: number },
 ): Prompt {
-    const q = truncate(request.question, Math.floor(opts.budgetChars * 0.6));
-    const left = opts.budgetChars - q.text.length - SYSTEM_PROMPT.length;
-    const context = left > 200 ? contextLines(all, request.triggerEventId, opts.maxLines, left) : [];
+    // The request and its subject share 60% of the budget; the conversation gets the rest.
+    const big = Math.floor(opts.budgetChars * 0.6);
+    const q = truncate(request.question, big);
+    const s = request.subject ? truncate(request.subject.body, Math.max(200, big - q.text.length)) : null;
+    const subject = request.subject && s ? { from: request.subject.from, body: s.text } : undefined;
+    const scope = request.scope ?? "recent";
+    let context: Line[] | null = null;
+    if (scope !== "none") {
+        const left = opts.budgetChars - q.text.length - (s?.text.length ?? 0) - SYSTEM_PROMPT.length;
+        context = left > 200 ? contextLines(all, request.triggerEventId, opts.maxLines, left) : [];
+        if (scope === "since-mine") context = sinceMine(context, request.sender);
+    }
     return {
-        messages: buildMessages(context, { sender: request.sender, question: q.text }, opts.prefix),
-        context: context.length,
-        truncated: q.truncated,
+        messages: buildMessages(context, { sender: request.sender, question: q.text, subject }, opts.prefix),
+        context: context?.length ?? 0,
+        truncated: q.truncated || !!s?.truncated,
     };
 }
 

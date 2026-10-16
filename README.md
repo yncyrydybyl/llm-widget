@@ -52,6 +52,42 @@ Other people in the room need a URL their browser can reach. For real use, deplo
 
 `#/?engine=echo` swaps the model for a GPU-free echo engine (used by the e2e tests).
 
+## Shortcuts
+
+After the trigger, a shortcut gives the model a fixed, specific instruction; small models
+follow those much better than free-form requests. Send the request **as a reply** to make
+that message the one it works on.
+
+| Shortcut | Does |
+|---|---|
+| `!ai sum [n]` | summarise the conversation (the last *n* messages) |
+| `!ai catchup` | what happened since your last message |
+| `!ai decisions` | the decisions taken |
+| `!ai todo` | action items with owner and due date |
+| `!ai questions` | questions nobody answered |
+| `!ai notes` | meeting notes: topics, decisions, next steps |
+| `!ai schedule` | find a date that suits everyone |
+| `!ai mood` | the tone of the discussion |
+| `!ai email [to whom]` / `!ai announce` | turn the discussion into an email / announcement |
+| `!ai ideas <topic>` | brainstorm |
+| `!ai tldr` | two-sentence summary of a message |
+| `!ai tr <language> [text]` | translate (`tr en`, `tr German`) |
+| `!ai fix [text]` | correct spelling and grammar |
+| `!ai rewrite <polite\|short\|formal\|casual\|simple\|clear> [text]` | rewrite in another style |
+| `!ai explain [term]` | explain a term, or the message replied to |
+| `!ai reply [how]` | draft a reply to a message |
+| `!ai help` | post this list (no model needed) |
+
+- **Which message they work on.** Commands that work on a message (`tldr`, `tr`, `fix`,
+  `rewrite`, `reply`) take, in this order: the message you reply to, text after the
+  command, or the message just before the request. They leave the rest of the
+  conversation out of the prompt, which keeps them fast.
+- **Extra words set the focus.** Words after other commands narrow what the model looks
+  at: `!ai sum the budget`.
+- **A question mark keeps it a question.** A request that ends in `?` stays a free
+  question even if it starts with a command word.
+- **Free questions sent as a reply** get the replied-to message as their subject too.
+
 ## How it behaves
 
 - **Whose requests it answers:** by default only your own `!ai …` messages, so when
@@ -69,8 +105,8 @@ Other people in the room need a URL their browser can reach. For real use, deplo
 - **Answers** are `m.notice` events with an `m.in_reply_to` relation and a
   `de.minagawa.llm_widget` marker, so other instances recognise model output and never
   answer it.
-- **Models:** a curated list of WebLLM builds, from SmolLM2 360M (0.4 GB, for testing) to
-  Llama 3.1 8B. GPUs without the `shader-f16` extension get the larger `q4f32` builds
+- **Models:** a curated list of WebLLM builds, from SmolLM2 360M (0.4 GB, for testing)
+  through Qwen 3.5 2B/4B and Gemma 4 E2B to Llama 3.1 8B. GPUs without the `shader-f16` extension get the larger `q4f32` builds
   automatically. Reasoning output (`<think>…</think>`) is stripped before posting.
 
 ## Widgets in the room and donations

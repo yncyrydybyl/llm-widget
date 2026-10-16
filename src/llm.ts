@@ -22,11 +22,14 @@ export const MODELS: ModelInfo[] = [
     { id: "gemma3-1b-it", label: "Gemma 3 1B", f16MB: 711 },
     { id: "Qwen2.5-1.5B-Instruct", label: "Qwen 2.5 1.5B", f16MB: 1630, f32MB: 1889 },
     { id: "Llama-3.2-3B-Instruct", label: "Llama 3.2 3B", f16MB: 2264, f32MB: 2952 },
-    { id: "Qwen3-4B", label: "Qwen 3 4B (reasoning)", f16MB: 3432, f32MB: 4328 },
+    { id: "Qwen3.5-2B", label: "Qwen 3.5 2B", f16MB: 2245, f32MB: 2592 },
+    { id: "gemma-4-E2B-it", label: "Gemma 4 E2B", f16MB: 3387, f32MB: 3863 },
+    { id: "Qwen3-4B", label: "Qwen 3 4B", f16MB: 3432, f32MB: 4328 },
+    { id: "Qwen3.5-4B", label: "Qwen 3.5 4B", f16MB: 3868, f32MB: 4681 },
     { id: "Llama-3.1-8B-Instruct", label: "Llama 3.1 8B (needs a big GPU)", f16MB: 5001, f32MB: 6101 },
 ];
 
-export const DEFAULT_MODEL = "Qwen2.5-1.5B-Instruct";
+export const DEFAULT_MODEL = "Qwen3.5-2B";
 
 /** Models usable on this GPU: without shader-f16 only those with an f32 build. */
 export function availableModels(f16: boolean): ModelInfo[] {
@@ -113,7 +116,7 @@ class WebLlmEngine implements Engine {
 
     async chat(messages: ChatMessage[], onText: (soFar: string) => void, opts: ChatOptions = {}): Promise<string> {
         // Qwen3 would otherwise think at length before every answer, acknowledgements included.
-        const extra_body = /^Qwen3-/.test(this.modelId) ? { enable_thinking: false } : undefined;
+        const extra_body = /^Qwen3/.test(this.modelId) ? { enable_thinking: false } : undefined;
         const { head, rounds } = prefillRounds(messages, opts.chunkChars ?? Infinity);
         const history: ChatMessage[] = [...head];
         const usage: Usage = { promptTokens: 0, completionTokens: 0 };
@@ -191,7 +194,8 @@ export class EchoEngine implements Engine {
     async chat(messages: ChatMessage[], onText: (soFar: string) => void, opts: ChatOptions = {}): Promise<string> {
         const last = messages[messages.length - 1]?.content ?? "";
         const request = last.slice(last.lastIndexOf("Request from"));
-        const lines = (last.match(/<conversation>\n([\s\S]*)\n<\/conversation>/)?.[1] ?? "").split("\n").length;
+        const transcript = last.match(/<conversation>\n([\s\S]*)\n<\/conversation>/)?.[1];
+        const lines = transcript ? transcript.split("\n").length : 0;
         const answer = `echo (${lines} lines of context): ${request}`;
         let text = "";
         for (const word of answer.split(" ")) {
