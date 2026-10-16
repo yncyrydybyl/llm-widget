@@ -143,7 +143,7 @@ on first use, about 60 MB each, and are cached in the browser.
 - **Private questions:** the input box in the widget asks about the room without posting
   anything.
 - **Answers** are `m.notice` events with an `m.in_reply_to` relation and a
-  `de.minagawa.llm_widget` marker, so other instances recognise model output and never
+  `de.datanauten.llm_widget` marker, so other instances recognise model output and never
   answer it.
 - **Models:** a curated list of WebLLM builds, from SmolLM2 360M (0.4 GB, for testing)
   through Qwen 3.5 2B/4B and Gemma 4 E2B to Llama 3.1 8B. GPUs without the `shader-f16` extension get the larger `q4f32` builds
@@ -155,7 +155,7 @@ At the top, the widget shows how many widgets are open in the room, how many hav
 loaded, and how many can answer *you*: yours, or someone else's that answers everyone.
 Expand it to see each one and the table of what each member has donated to the room.
 
-Every widget announces itself with a `de.minagawa.llm_widget.presence` timeline event:
+Every widget announces itself with a `de.datanauten.llm_widget.presence` timeline event:
 
 - **When it opens.** That announcement asks the others to announce themselves too, so the
   count is right within a few seconds.
@@ -173,7 +173,7 @@ your own. For each answer, the widget counts:
 - the tokens it wrote
 - how long the model worked on it
 
-Each answer also carries these numbers in its `de.minagawa.llm_widget` field.
+Each answer also carries these numbers in its `de.datanauten.llm_widget` field.
 
 Each browser keeps its own totals per room and includes them in its announcements; a
 member's total is the sum over their devices. Two limits follow from that:
@@ -196,8 +196,8 @@ member's total is the sum over their devices. Two limits follow from that:
 | `org.matrix.msc2762.receive.event:m.room.message#m.image` | See images, for OCR when asked |
 | `org.matrix.msc2762.receive.event:m.room.message#m.file` | See files (PDF, text), to read them when asked |
 | `org.matrix.msc4039.download_file` | Download an attachment when someone asks about it |
-| `org.matrix.msc2762.send.event:de.minagawa.llm_widget.presence` | Announce that this widget is open, its model, and what it has donated |
-| `org.matrix.msc2762.receive.event:de.minagawa.llm_widget.presence` | Count the other open widgets and show everyone's donations |
+| `org.matrix.msc2762.send.event:de.datanauten.llm_widget.presence` | Announce that this widget is open, its model, and what it has donated |
+| `org.matrix.msc2762.receive.event:de.datanauten.llm_widget.presence` | Count the other open widgets and show everyone's donations |
 
 In an encrypted room, the client decrypts messages before handing them to the widget, and
 it encrypts the answers. Everything stays end-to-end encrypted, and the model sees only

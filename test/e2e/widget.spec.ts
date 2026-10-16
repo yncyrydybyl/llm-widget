@@ -23,7 +23,7 @@ const sent = (page: Page) => page.evaluate(() => (window as unknown as { __SENT_
 type Sent = { type: string; content: Record<string, unknown> };
 const messages = async (page: Page) => ((await sent(page)) as Sent[]).filter((e) => e.type === "m.room.message");
 const presence = async (page: Page) => ((await sent(page)) as Sent[]).filter((e) => e.type === PRESENCE);
-const PRESENCE = "de.minagawa.llm_widget.presence";
+const PRESENCE = "de.datanauten.llm_widget.presence";
 const peer = (id: string, sender: string, ts: number, content: Record<string, unknown>) => ({
     type: PRESENCE,
     event_id: id,
@@ -50,8 +50,8 @@ test("requests exactly the capabilities it needs", async ({ page }) => {
             "org.matrix.msc2762.receive.event:m.room.message#m.image",
             "org.matrix.msc2762.receive.event:m.room.message#m.file",
             "org.matrix.msc4039.download_file",
-            "org.matrix.msc2762.send.event:de.minagawa.llm_widget.presence",
-            "org.matrix.msc2762.receive.event:de.minagawa.llm_widget.presence",
+            "org.matrix.msc2762.send.event:de.datanauten.llm_widget.presence",
+            "org.matrix.msc2762.receive.event:de.datanauten.llm_widget.presence",
         ].sort(),
     );
 });
@@ -126,7 +126,7 @@ test("counts the widgets in the room and answers a newcomer's probe", async ({ p
     await push(page, msg("$q", "!ai hello", now + 1));
     await expect(w.getByText("posted to room")).toBeVisible();
     await expect.poll(async () => (await presence(page)).at(-1)?.content.donated, { timeout: 5000 }).toMatchObject({ answers: 1 });
-    const answer = (await messages(page))[0].content["de.minagawa.llm_widget"] as Record<string, number>;
+    const answer = (await messages(page))[0].content["de.datanauten.llm_widget"] as Record<string, number>;
     expect(answer.completion_tokens).toBeGreaterThan(0);
 
     await w.locator("summary", { hasText: "open in this room" }).click();

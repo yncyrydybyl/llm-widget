@@ -7,7 +7,7 @@ import type { IRoomEvent } from "matrix-widget-api";
 import { describe, toMedia, type Media } from "./media";
 
 /** Marks our own answers so they are recognised as model output, also in other widgets. */
-export const MARKER = "de.minagawa.llm_widget";
+export const MARKER = "de.datanauten.llm_widget";
 
 export interface Line {
     eventId: string;

@@ -17,7 +17,7 @@
  */
 import type { IRoomEvent } from "matrix-widget-api";
 
-export const PRESENCE_TYPE = "de.minagawa.llm_widget.presence";
+export const PRESENCE_TYPE = "de.datanauten.llm_widget.presence";
 /**
  * How often an open widget repeats its announcement. Rare on purpose: every
  * announcement is a timeline event, and hosts read back only the last ~50.
