@@ -207,12 +207,22 @@ export function stripThinking(text: string): string {
         .trim();
 }
 
-export function answerContent(body: string, replyTo: string, model: string): Record<string, unknown> {
+/** What an answer cost, carried in the event so anyone can see it. */
+export interface AnswerStats {
+    usage?: { promptTokens: number; completionTokens: number };
+    ms?: number;
+}
+
+export function answerContent(body: string, replyTo: string, model: string, stats: AnswerStats = {}): Record<string, unknown> {
     return {
         msgtype: "m.notice",
         body,
         "m.relates_to": { "m.in_reply_to": { event_id: replyTo } },
-        [MARKER]: { model },
+        [MARKER]: {
+            model,
+            ...(stats.usage ? { prompt_tokens: stats.usage.promptTokens, completion_tokens: stats.usage.completionTokens } : {}),
+            ...(stats.ms !== undefined ? { ms: stats.ms } : {}),
+        },
     };
 }
 

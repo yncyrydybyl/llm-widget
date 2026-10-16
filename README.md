@@ -73,6 +73,41 @@ Other people in the room need a URL their browser can reach. For real use, deplo
   Llama 3.1 8B. GPUs without the `shader-f16` extension get the larger `q4f32` builds
   automatically. Reasoning output (`<think>…</think>`) is stripped before posting.
 
+## Widgets in the room and donations
+
+At the top, the widget shows how many widgets are open in the room, how many have a model
+loaded, and how many can answer *you*: yours, or someone else's that answers everyone.
+Expand it to see each one and the table of what each member has donated to the room.
+
+Every widget announces itself with a `de.minagawa.llm_widget.presence` timeline event:
+
+- **When it opens.** That announcement asks the others to announce themselves too, so the
+  count is right within a few seconds.
+- **When its model or "answer everyone" setting changes,** and after each answer it posts.
+- **Every 10 minutes while open.** An announcement older than 21 minutes no longer counts.
+- **When the page closes,** with `online: false`. This is best effort; the 21 minutes cover
+  closes where it doesn't get through.
+
+Clients don't render this event type. In an encrypted room it is encrypted like any message.
+
+A donation is an answer posted to the room. Private questions don't count, because they're
+your own. For each answer, the widget counts:
+
+- the tokens the model read, including the parts of a long prompt read in rounds
+- the tokens it wrote
+- how long the model worked on it
+
+Each answer also carries these numbers in its `de.minagawa.llm_widget` field.
+
+Each browser keeps its own totals per room and includes them in its announcements; a
+member's total is the sum over their devices. Two limits follow from that:
+
+- **Totals can be edited.** Nothing stops a member from inflating their own numbers in
+  their browser.
+- **Closed widgets eventually drop out.** A member whose widget has been closed for a while
+  disappears from the table once their last announcement scrolls out of the room history
+  the client returns.
+
 ## Capabilities requested
 
 | Capability | Why |
@@ -81,6 +116,8 @@ Other people in the room need a URL their browser can reach. For real use, deplo
 | `org.matrix.msc2762.receive.event:m.room.message#m.text` | Read the conversation and `!ai` requests |
 | `org.matrix.msc2762.receive.event:m.room.message#m.notice` | Keep earlier answers in context and see when another widget already answered |
 | `org.matrix.msc2762.send.event:m.room.message#m.notice` | Post answers |
+| `org.matrix.msc2762.send.event:de.minagawa.llm_widget.presence` | Announce that this widget is open, its model, and what it has donated |
+| `org.matrix.msc2762.receive.event:de.minagawa.llm_widget.presence` | Count the other open widgets and show everyone's donations |
 
 In an encrypted room, the client decrypts messages before handing them to the widget, and
 it encrypts the answers. Everything stays end-to-end encrypted, and the model sees only

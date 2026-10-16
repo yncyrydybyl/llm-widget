@@ -4,7 +4,19 @@
  */
 import type { IRoomEvent, WidgetApi } from "matrix-widget-api";
 import { CAPABILITIES, connect, initialTheme, readParams, type Params } from "./widget-connect";
-import { DEFAULT_MODEL, EchoEngine, MODELS, availableModels, isCached, loadWebLlm, webGpuStatus, webLlmId, type Engine, type ModelInfo } from "./llm";
+import { DEFAULT_MODEL, EchoEngine, MODELS, availableModels, isCached, loadWebLlm, webGpuStatus, webLlmId, type Engine, type ModelInfo, type Usage } from "./llm";
+import {
+    HEARTBEAT_MS,
+    NO_DONATION,
+    PRESENCE_TYPE,
+    Roster,
+    addDonation,
+    presenceContent,
+    toPresence,
+    type Donation,
+    type Donor,
+    type Summary,
+} from "./presence";
 import {
     Transcript,
     answerContent,
@@ -32,6 +44,9 @@ export interface Job {
     note?: string;
     /** GPU resets survived so far; the job gives up after MAX_GPU_RETRIES. */
     gpuRetries?: number;
+    /** Tokens and model time of the successful attempt. */
+    usage?: Usage;
+    ms?: number;
 }
 
 export interface Settings {
@@ -64,6 +79,44 @@ const MIN_CHUNK = 300;
 const MAX_GPU_RETRIES = 4;
 const isGpuLoss = (msg: string): boolean => /device (was )?lost|GPUBuffer|mapAsync|DEVICE_LOST/i.test(msg);
 const LOCAL_USER = "@you:local";
+const DEVICE_KEY = "llm-widget.device";
+const DONATED_KEY = "llm-widget.donated";
+
+const randomId = (): string => crypto.randomUUID().slice(0, 13);
+
+/** A random id per browser, so this device's totals are counted once. */
+function deviceId(): string {
+    try {
+        let id = localStorage.getItem(DEVICE_KEY);
+        if (!id) {
+            id = randomId();
+            localStorage.setItem(DEVICE_KEY, id);
+        }
+        return id;
+    } catch {
+        return randomId();
+    }
+}
+
+/** This device's donation, per room widget (the widget id is the same for every member of the room). */
+function loadDonated(widgetId: string): Donation {
+    try {
+        const all = JSON.parse(localStorage.getItem(DONATED_KEY) ?? "{}") as Record<string, Donation>;
+        return { ...NO_DONATION, ...all[widgetId] };
+    } catch {
+        return { ...NO_DONATION };
+    }
+}
+
+function saveDonated(widgetId: string, d: Donation): void {
+    try {
+        const all = JSON.parse(localStorage.getItem(DONATED_KEY) ?? "{}") as Record<string, Donation>;
+        all[widgetId] = d;
+        localStorage.setItem(DONATED_KEY, JSON.stringify(all));
+    } catch {
+        /* private window: totals restart with the page */
+    }
+}
 
 function loadSettings(): Settings {
     const defaults: Settings = {
@@ -108,6 +161,16 @@ export class Controller {
     lines = $state<Line[]>([]);
     jobs = $state<Job[]>([]);
 
+    /** Widgets open in the room and who can answer; refreshed on every announcement. */
+    presence = $state<Summary | null>(null);
+    donors = $state<Donor[]>([]);
+    readonly instance = randomId();
+    private readonly device = deviceId();
+    private readonly widgetId = this.params.get("widgetId") ?? this.params.get("matrix_widget_id") ?? "";
+    donated = $state<Donation>(loadDonated(this.widgetId));
+    private roster = new Roster();
+    private announceTimer: ReturnType<typeof setTimeout> | null = null;
+
     private api: WidgetApi | null = null;
     private engine: Engine | null = null;
     private transcript = new Transcript();
@@ -142,6 +205,8 @@ export class Controller {
         } catch {
             /* private window: settings just do not persist */
         }
+        // "Answer everyone" and the prefix are part of what others see.
+        this.announceSoon();
     }
 
     async start(): Promise<void> {
@@ -154,7 +219,7 @@ export class Controller {
         });
 
         const conn = await connect(this.params, {
-            onEvent: (ev) => this.onRoomEvent(ev, true),
+            onEvent: (ev) => (ev.type === PRESENCE_TYPE ? this.onPresence(ev, true) : this.onRoomEvent(ev, true)),
             onTheme: (name) => (this.theme = name.startsWith("dark") ? "dark" : "light"),
         });
         if (!conn) {
@@ -174,6 +239,75 @@ export class Controller {
         this.room = "ready";
         await this.readHistory();
         this.live = true;
+        await this.readPresence();
+        this.startPresence();
+    }
+
+    private async readPresence(): Promise<void> {
+        try {
+            const events = await this.api!.readRoomEvents(PRESENCE_TYPE, 50);
+            for (const ev of events) this.onPresence(ev, false);
+        } catch {
+            /* not approved or not supported: live announcements only */
+        }
+    }
+
+    /** Announce now (asking the others to do the same), then keep announcing while open. */
+    private startPresence(): void {
+        if (this.missing.some((c) => c.includes(PRESENCE_TYPE))) return;
+        void this.announce(true);
+        setInterval(() => void this.announce(), HEARTBEAT_MS);
+        // Announcements expire; recount now and then even when nothing arrives.
+        setInterval(() => this.refreshPresence(), 30_000);
+        // Best effort: a closing tab may not get the event out; the TTL covers that.
+        window.addEventListener("pagehide", () => void this.announce(false, false));
+    }
+
+    private onPresence(ev: IRoomEvent, live: boolean): void {
+        const p = toPresence(ev);
+        if (!p || !this.roster.add(p)) return;
+        this.refreshPresence();
+        // A widget just opened and asks who is here: answer, after a random
+        // delay so several widgets do not all send at the same moment. Always
+        // answer: the newcomer may have read the history just before our last
+        // announcement. Probes arriving together share one answer.
+        if (live && p.probe && p.instance !== this.instance) this.announceSoon(500 + Math.random() * 2500);
+    }
+
+    private refreshPresence(): void {
+        this.presence = this.roster.summary(Date.now(), this.userId, this.instance);
+        this.donors = this.roster.donors();
+    }
+
+    /** Coalesces changes (model loaded, settings, a donation) into one announcement. */
+    private announceSoon(delay = 1500): void {
+        if (this.room !== "ready" || this.announceTimer) return;
+        this.announceTimer = setTimeout(() => {
+            this.announceTimer = null;
+            void this.announce();
+        }, delay);
+    }
+
+    private async announce(probe = false, online = true): Promise<void> {
+        if (!this.api || this.room !== "ready") return;
+        const content = {
+            instance: this.instance,
+            device: this.device,
+            online,
+            model: this.engineStatus === "ready" ? this.model : null,
+            everyone: this.answersOthers,
+            prefix: this.settings.prefix,
+            donated: { ...this.donated },
+            ...(probe ? { probe } : {}),
+        };
+        // Count ourselves at once; the host's echo of the event changes nothing.
+        this.roster.add({ ...content, sender: this.userId ?? "", ts: Date.now() });
+        this.refreshPresence();
+        try {
+            await this.api.sendRoomEvent(PRESENCE_TYPE, presenceContent(content));
+        } catch {
+            /* not allowed or rate-limited: the next heartbeat tries again */
+        }
     }
 
     private async readHistory(): Promise<void> {
@@ -238,7 +372,14 @@ export class Controller {
         try {
             this.job(id)!.status = "generating";
             this.abort = new AbortController();
-            const raw = await this.generate(id, engine, next);
+            const started = performance.now();
+            let usage: Usage | undefined;
+            const raw = await this.generate(id, engine, next, (u) => (usage = u));
+            const j0 = this.job(id);
+            if (j0) {
+                j0.usage = usage;
+                j0.ms = Math.round(performance.now() - started);
+            }
             const answer = stripThinking(raw);
             const j = this.job(id)!;
             j.output = answer;
@@ -262,7 +403,7 @@ export class Controller {
     }
 
     /** Generates within the window, shrinking the prompt when the model says it is too long. */
-    private async generate(id: number, engine: Engine, request: Job): Promise<string> {
+    private async generate(id: number, engine: Engine, request: Job, onUsage: (u: Usage) => void): Promise<string> {
         for (let budget = PROMPT_BUDGET; ; budget = Math.floor(budget / 2)) {
             const prompt = buildPrompt(this.transcript.lines(), request, {
                 prefix: this.settings.prefix,
@@ -290,6 +431,7 @@ export class Controller {
                         signal: this.abort?.signal,
                         chunkChars: this.settings.chunks[engine.modelId],
                         onRound: (i, of) => describe(`reading part ${i} of ${of}; `),
+                        onUsage,
                     },
                 );
             } catch (e) {
@@ -351,8 +493,17 @@ export class Controller {
             j.error = "Another widget answered first.";
             return;
         }
-        await this.api.sendRoomEvent("m.room.message", answerContent(answer, trigger, model));
+        await this.api.sendRoomEvent("m.room.message", answerContent(answer, trigger, model, { usage: j.usage, ms: j.ms }));
         j.status = "posted";
+        // Only answers posted to the room count as donated; private questions are one's own.
+        this.donated = addDonation(this.donated, {
+            answers: 1,
+            promptTokens: j.usage?.promptTokens ?? 0,
+            completionTokens: j.usage?.completionTokens ?? 0,
+            gpuMs: j.ms ?? 0,
+        });
+        saveDonated(this.widgetId, this.donated);
+        this.announceSoon();
     }
 
     stop(): void {
@@ -375,6 +526,7 @@ export class Controller {
                       this.progressText = p.text;
                   });
             this.engineStatus = "ready";
+            this.announceSoon();
             void this.refreshCache();
             void this.pump();
         } catch (e) {
@@ -388,6 +540,7 @@ export class Controller {
         await this.engine?.unload();
         this.engine = null;
         this.engineStatus = "idle";
+        this.announceSoon();
     }
 
     private async refreshCache(): Promise<void> {

@@ -15,6 +15,7 @@ import {
     type IRoomEvent,
     type IWidgetApiRequest,
 } from "matrix-widget-api";
+import { PRESENCE_TYPE } from "./presence";
 
 /** Parameters may arrive in the query (host-appended) or the fragment (ours). */
 export interface Params {
@@ -42,6 +43,10 @@ export const CAPABILITIES: Capability[] = [
     // Post answers. Notices, not text: clients render them as machine output and
     // bots conventionally never react to them, so two widgets cannot loop.
     WidgetEventCapability.forRoomMessageEvent(EventDirection.Send, "m.notice").raw as Capability,
+    // Presence: which widgets are open, which can answer, and what each device
+    // has donated. A custom timeline event type that clients do not render.
+    WidgetEventCapability.forRoomEvent(EventDirection.Send, PRESENCE_TYPE).raw as Capability,
+    WidgetEventCapability.forRoomEvent(EventDirection.Receive, PRESENCE_TYPE).raw as Capability,
 ];
 
 export interface Connection {

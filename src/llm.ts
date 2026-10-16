@@ -52,6 +52,13 @@ export interface ChatOptions {
     chunkChars?: number;
     /** Called before each round of a multi-round prompt. */
     onRound?: (round: number, of: number) => void;
+    /** Tokens processed, summed over all rounds; called once the answer is complete. */
+    onUsage?: (u: Usage) => void;
+}
+
+export interface Usage {
+    promptTokens: number;
+    completionTokens: number;
 }
 
 export interface Engine {
@@ -109,6 +116,11 @@ class WebLlmEngine implements Engine {
         const extra_body = /^Qwen3-/.test(this.modelId) ? { enable_thinking: false } : undefined;
         const { head, rounds } = prefillRounds(messages, opts.chunkChars ?? Infinity);
         const history: ChatMessage[] = [...head];
+        const usage: Usage = { promptTokens: 0, completionTokens: 0 };
+        const count = (u?: { prompt_tokens?: number; completion_tokens?: number } | null): void => {
+            usage.promptTokens += u?.prompt_tokens ?? 0;
+            usage.completionTokens += u?.completion_tokens ?? 0;
+        };
         const abort = (): void => this.engine.interruptGenerate();
         opts.signal?.addEventListener("abort", abort);
         try {
@@ -124,6 +136,7 @@ class WebLlmEngine implements Engine {
                     max_tokens: 16,
                     extra_body,
                 });
+                count(r.usage);
                 if (opts.signal?.aborted) return "";
                 history.push({ role: "assistant", content: r.choices[0]?.message.content ?? "" });
             }
@@ -132,6 +145,7 @@ class WebLlmEngine implements Engine {
             const stream = await this.engine.chat.completions.create({
                 messages: history,
                 stream: true,
+                stream_options: { include_usage: true },
                 temperature: 0.6,
                 max_tokens: 768,
                 extra_body,
@@ -139,8 +153,10 @@ class WebLlmEngine implements Engine {
             let text = "";
             for await (const chunk of stream) {
                 text += chunk.choices[0]?.delta?.content ?? "";
-                onText(text);
+                if (chunk.usage) count(chunk.usage);
+                else onText(text);
             }
+            opts.onUsage?.(usage);
             return text;
         } finally {
             opts.signal?.removeEventListener("abort", abort);
@@ -172,7 +188,7 @@ export async function loadWebLlm(modelId: string, onProgress: (p: Progress) => v
 export class EchoEngine implements Engine {
     readonly modelId = "echo";
 
-    async chat(messages: ChatMessage[], onText: (soFar: string) => void): Promise<string> {
+    async chat(messages: ChatMessage[], onText: (soFar: string) => void, opts: ChatOptions = {}): Promise<string> {
         const last = messages[messages.length - 1]?.content ?? "";
         const request = last.slice(last.lastIndexOf("Request from"));
         const lines = (last.match(/<conversation>\n([\s\S]*)\n<\/conversation>/)?.[1] ?? "").split("\n").length;
@@ -183,6 +199,9 @@ export class EchoEngine implements Engine {
             onText(text);
             await new Promise((r) => setTimeout(r, 5));
         }
+        // Words stand in for tokens: enough to exercise the counters.
+        const words = (t: string): number => t.split(/\s+/).filter(Boolean).length;
+        opts.onUsage?.({ promptTokens: messages.reduce((n, m) => n + words(m.content), 0), completionTokens: words(text) });
         return text;
     }
 

@@ -13,6 +13,10 @@
     });
 
     const gb = (mb: number): string => (mb / 1000).toFixed(1);
+    const tokens = (n: number): string => (n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+    const duration = (ms: number): string =>
+        ms >= 3_600_000 ? `${(ms / 3_600_000).toFixed(1)} h` : ms >= 60_000 ? `${(ms / 60_000).toFixed(1)} min` : `${(ms / 1000).toFixed(1)} s`;
+    const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
     const embedded = $derived(c.room !== "standalone");
     const percent = $derived(Math.round(c.progress * 100));
 
@@ -46,6 +50,51 @@
             {#if c.room === "standalone"}standalone{:else if c.room === "connecting"}connecting…{:else if c.room === "ready"}in room{:else}no permission{/if}
         </span>
     </header>
+
+    {#if c.presence}
+        {@const p = c.presence}
+        <details class="presence">
+            <summary>
+                <b>{plural(p.open, "widget")}</b> open in this room · {p.ready} with a model ·
+                <span class:warn={p.forUser === 0}>{p.forUser === 0 ? "none can answer you" : `${p.forUser} can answer you`}</span>
+            </summary>
+            <ul class="peers">
+                {#each p.peers as peer (peer.instance)}
+                    <li>
+                        <b>{displayName(peer.sender) || "you"}</b>{peer.instance === c.instance ? " (this widget)" : ""}:
+                        {#if peer.model}
+                            {peer.model}, answers {peer.everyone ? "everyone" : "its owner only"} on <code>{peer.prefix}</code>
+                        {:else}
+                            open, no model loaded
+                        {/if}
+                    </li>
+                {/each}
+            </ul>
+            <h2>Donated to this room</h2>
+            {#if c.donors.length}
+                <table>
+                    <thead><tr><th>Who</th><th>Answers</th><th>Tokens read</th><th>Tokens written</th><th>GPU time</th></tr></thead>
+                    <tbody>
+                        {#each c.donors as d (d.user)}
+                            <tr>
+                                <td>{displayName(d.user)}</td>
+                                <td>{d.donated.answers}</td>
+                                <td>{tokens(d.donated.promptTokens)}</td>
+                                <td>{tokens(d.donated.completionTokens)}</td>
+                                <td>{duration(d.donated.gpuMs)}</td>
+                            </tr>
+                        {/each}
+                    </tbody>
+                </table>
+            {:else}
+                <p class="small muted">No answers posted yet.</p>
+            {/if}
+            <p class="small muted">
+                Counted by each widget for answers it posted here, and shared when it announces itself.
+                Widgets closed for a while drop out of the list once their last announcement scrolls out of the room's recent history.
+            </p>
+        </details>
+    {/if}
 
     {#if c.room === "no-permission"}
         <p class="note warn">
@@ -151,6 +200,9 @@
                 </div>
                 <p class="question" title={j.question.length > 300 ? j.question.slice(0, 2000) : undefined}>{j.question || "(summarise)"}</p>
                 {#if j.note}<p class="small muted">{j.note}</p>{/if}
+                {#if j.usage && j.ms !== undefined && (j.status === "posted" || j.status === "done")}
+                    <p class="small muted">{tokens(j.usage.promptTokens)} tokens read · {tokens(j.usage.completionTokens)} written · {duration(j.ms)}</p>
+                {/if}
                 {#if j.output}<p class="answer">{j.output}</p>{/if}
                 {#if j.error}<p class="small warn">{j.error}</p>{/if}
             </article>
