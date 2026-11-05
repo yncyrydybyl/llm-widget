@@ -39,6 +39,8 @@
             window.__UPLOADS__ = [];
             window.__DOWNLOADS__ = [];
             window.__READ_EVENTS__ = null;
+            window.__READ_IN_FLIGHT__ = 0;
+            window.__MAX_READ_IN_FLIGHT__ = 0;
             window.__CONTENT_LOADED__ = false;
 
             // Hosts append widgetId + parentUrl to the query; widget config goes in the fragment.
@@ -123,7 +125,11 @@
 
                     case "org.matrix.msc2876.read_events":
                         window.__READ_EVENTS__ = m.data;
+                        window.__READ_IN_FLIGHT__++;
+                        window.__MAX_READ_IN_FLIGHT__ = Math.max(window.__MAX_READ_IN_FLIGHT__, window.__READ_IN_FLIGHT__);
+                        if (fixture.readDelay) await new Promise((resolve) => setTimeout(resolve, fixture.readDelay));
                         reply(m, { events: fixture.events ?? [] });
+                        window.__READ_IN_FLIGHT__--;
                         break;
 
                     case "org.matrix.msc4039.upload_file": {

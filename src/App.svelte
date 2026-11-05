@@ -255,6 +255,7 @@
                 </div>
                 <p class="question" title={j.question.length > 300 ? j.question.slice(0, 2000) : undefined}>{j.question || "(summarise)"}</p>
                 {#if j.note}<p class="small muted">{j.note}</p>{/if}
+                {#if j.contextWarning}<p class="small warn">{j.contextWarning}</p>{/if}
                 {#if j.usage && j.ms !== undefined && (j.status === "posted" || j.status === "done")}
                     <p class="small muted">{tokens(j.usage.promptTokens)} tokens read · {tokens(j.usage.completionTokens)} written · {duration(j.ms)}</p>
                 {/if}

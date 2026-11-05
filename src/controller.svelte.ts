@@ -51,6 +51,7 @@ export interface Job {
     error?: string;
     /** Shown under the request: what had to be cut to fit the model. */
     note?: string;
+    contextWarning?: string;
     /** GPU resets survived so far; the job gives up after MAX_GPU_RETRIES. */
     gpuRetries?: number;
     /** Tokens and model time of the successful attempt. */
@@ -210,6 +211,8 @@ export class Controller {
     private vectors = new Map<string, number[]>();
     /** Events read as history at startup: context only, never answered. */
     private live = false;
+    private liveEvents = new Set<string>();
+    private requests: Promise<void> = Promise.resolve();
     private nextJob = 1;
     private busy = false;
     private abort: AbortController | null = null;
@@ -345,23 +348,28 @@ export class Controller {
     }
 
     private async readHistory(): Promise<void> {
-        if (!this.api) return;
-        for (const msgtype of ["m.text", "m.notice", "m.audio", "m.image", "m.file"]) {
+        const api = this.api;
+        if (!api) return;
+        await Promise.all(["m.text", "m.notice", "m.audio", "m.image", "m.file"].map(async (msgtype) => {
             try {
-                const events = await this.api.readRoomEvents("m.room.message", 50, msgtype);
+                const events = await api.readRoomEvents("m.room.message", 50, msgtype);
                 for (const ev of events) this.onRoomEvent(ev, false);
             } catch {
                 /* host without read_events, or not approved: live events only */
             }
-        }
+        }));
     }
 
     private onRoomEvent(ev: IRoomEvent, live: boolean): void {
         const line = toLine(ev);
-        if (!line || !this.transcript.add(line)) return;
-        this.lines = this.transcript.lines();
+        if (!line) return;
+        if (this.transcript.add(line)) this.lines = this.transcript.lines();
+        if (!live && !this.live) this.liveEvents.add(line.eventId);
         // History is context; only messages that arrive while we listen are requests.
-        if (live && this.live) this.maybeAnswer(line);
+        if (live && this.live && !this.liveEvents.has(line.eventId)) {
+            this.liveEvents.add(line.eventId);
+            this.maybeAnswer(line);
+        }
     }
 
     private maybeAnswer(line: Line): void {
@@ -370,7 +378,7 @@ export class Controller {
         if (question === null) return;
         const mine = !this.userId || line.sender === this.userId || this.room === "standalone";
         if (!mine && !this.answersOthers) return;
-        this.enqueue({ sender: line.sender, question, triggerEventId: line.eventId, plan: plan(question, this.transcript.lines(), line, this.settings.prefix) });
+        this.queueRequest(line.sender, question, line);
     }
 
     /** Standalone: a local message, handled exactly like a room message. */
@@ -385,7 +393,15 @@ export class Controller {
     askPrivately(question: string): void {
         // The question box takes the same shortcuts, without the trigger.
         const q = parseTrigger(question, this.settings.prefix) ?? question;
-        this.enqueue({ sender: this.userId ?? LOCAL_USER, question: q, triggerEventId: null, plan: plan(q, this.transcript.lines(), null, this.settings.prefix) });
+        this.queueRequest(this.userId ?? LOCAL_USER, q, null);
+    }
+
+    private queueRequest(sender: string, question: string, trigger: Line | null): void {
+        const prefix = this.settings.prefix;
+        this.requests = this.requests.then(async () => {
+            await this.readHistory();
+            this.enqueue({ sender, question, triggerEventId: trigger?.eventId ?? null, plan: plan(question, this.transcript.lines(), trigger, prefix) });
+        });
     }
 
     private enqueue(j: Omit<Job, "id" | "status" | "output">): void {
@@ -620,6 +636,7 @@ export class Controller {
                 },
             );
             const j = this.job(id);
+            if (j) j.contextWarning = plan.scope !== "none" && prompt.context === 0 ? "No earlier conversation is available to the model." : undefined;
             const shortened = prompt.truncated ? "Request shortened to fit the model; " : "";
             const reset = j?.gpuRetries ? `retry ${j.gpuRetries} after a GPU reset; ` : "";
             const describe = (rounds: string): void => {

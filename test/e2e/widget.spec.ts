@@ -97,6 +97,81 @@ test("private questions never post", async ({ page }) => {
     expect(await messages(page)).toHaveLength(0);
 });
 
+test("reloads delayed history before private and live requests", async ({ page }) => {
+    const w = await open(page, { params: { engine: "echo", matrix_user_id: ME }, events: [] });
+    await expect(w.getByText("in room")).toBeVisible();
+    await w.getByRole("button", { name: "Load model" }).click();
+    await page.evaluate((events) => {
+        (window as unknown as { __TEST_FIXTURE__: { events: unknown[] } }).__TEST_FIXTURE__.events = events;
+    }, [msg("$old", "The meeting is at three", 1), msg("$old-request", "!ai old request", 2)]);
+    const reply = msg("$new", "!ai tr en", 3);
+    (reply.content as Record<string, unknown>)["m.relates_to"] = { "m.in_reply_to": { event_id: "$old" } };
+    await push(page, reply);
+    await expect.poll(async () => (await messages(page)).length, { timeout: 10000 }).toBe(1);
+    expect(String((await messages(page))[0].content.body)).toContain("Translate this text into English");
+    await w.getByRole("textbox", { name: "Private question" }).fill("When is the meeting?");
+    await w.getByRole("button", { name: "Ask" }).click();
+    await expect(w.getByText("done", { exact: true })).toBeVisible();
+    await expect(w.locator("summary", { hasText: "Conversation the model sees" })).toContainText("(3)");
+    expect(await messages(page)).toHaveLength(1);
+});
+
+test("warns when a conversation request has no earlier context", async ({ page }) => {
+    const w = await open(page, { params: { engine: "echo", matrix_user_id: ME }, events: [] });
+    await w.getByRole("button", { name: "Load model" }).click();
+    await w.getByRole("textbox", { name: "Private question" }).fill("What happened?");
+    await w.getByRole("button", { name: "Ask" }).click();
+    await expect(w.getByText("No earlier conversation is available to the model.")).toBeVisible();
+});
+
+test("reloads delayed history for a private question", async ({ page }) => {
+    const w = await open(page, { params: { engine: "echo", matrix_user_id: ME }, events: [] });
+    await expect(w.getByText("in room")).toBeVisible();
+    await w.getByRole("button", { name: "Load model" }).click();
+    await page.evaluate((events) => {
+        (window as unknown as { __TEST_FIXTURE__: { events: unknown[] } }).__TEST_FIXTURE__.events = events;
+    }, [msg("$old", "The meeting is at three", 1)]);
+    await w.getByRole("textbox", { name: "Private question" }).fill("When is the meeting?");
+    await w.getByRole("button", { name: "Ask" }).click();
+    await expect(w.getByText("echo (1 lines of context)", { exact: false })).toBeVisible();
+    expect(await messages(page)).toHaveLength(0);
+});
+
+test("handles live requests also returned by a history refresh only once", async ({ page }) => {
+    const w = await open(page, { params: { engine: "echo", matrix_user_id: ME }, events: [] });
+    await expect(w.getByText("in room")).toBeVisible();
+    await w.getByRole("button", { name: "Load model" }).click();
+    const first = msg("$first", "!ai first?", 1);
+    const second = msg("$second", "!ai second?", 2);
+    await page.evaluate((events) => {
+        (window as unknown as { __TEST_FIXTURE__: { events: unknown[] } }).__TEST_FIXTURE__.events = events;
+    }, [first, second]);
+    await push(page, first);
+    await push(page, second);
+    await push(page, second);
+    await expect.poll(async () => (await messages(page)).length, { timeout: 10000 }).toBe(2);
+    const replies = (await messages(page)).map((m) => m.content["m.relates_to"]);
+    expect(replies).toEqual([
+        { "m.in_reply_to": { event_id: "$first" } },
+        { "m.in_reply_to": { event_id: "$second" } },
+    ]);
+});
+
+test("reads history types concurrently for a request", async ({ page }) => {
+    const w = await open(page, { params: { engine: "echo", matrix_user_id: ME }, events: [] });
+    await expect(w.getByText("in room")).toBeVisible();
+    await w.getByRole("button", { name: "Load model" }).click();
+    await page.evaluate(() => {
+        const host = window as unknown as { __TEST_FIXTURE__: { readDelay: number }; __MAX_READ_IN_FLIGHT__: number };
+        host.__TEST_FIXTURE__.readDelay = 100;
+        host.__MAX_READ_IN_FLIGHT__ = 0;
+    });
+    await w.getByRole("textbox", { name: "Private question" }).fill("What happened?");
+    await w.getByRole("button", { name: "Ask" }).click();
+    await expect(w.getByText("done", { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { __MAX_READ_IN_FLIGHT__: number }).__MAX_READ_IN_FLIGHT__)).toBeGreaterThan(1);
+});
+
 test("shows the consent problem when nothing is approved", async ({ page }) => {
     const w = await open(page, { params: { engine: "echo" }, deny: true });
     await expect(w.getByText("no permission")).toBeVisible();
